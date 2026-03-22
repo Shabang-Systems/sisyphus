@@ -120,8 +120,9 @@ export default function ReplyArrows({ editorRef, collapsedRoot }) {
                 const active = hoveredTaskId === parentId || hoveredTaskId === childId;
                 const a = 5;
 
+                const focused = !!collapsedRoot;
                 return (
-                    <g key={key} className={"reply-arrow" + (active ? " active" : "")}>
+                    <g key={key} className={"reply-arrow" + (active ? " active" : focused ? " focused" : "")}>
                         <path d={`M ${x1} ${parentY} L ${x2} ${parentY} L ${x2} ${childY} L ${x1} ${childY}`} />
                         <path d={`M ${x1 + a} ${childY - a} L ${x1} ${childY} L ${x1 + a} ${childY + a}`} />
                     </g>

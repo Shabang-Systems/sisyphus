@@ -165,16 +165,20 @@ export default function Editor() {
 
         const needsId = rows.filter(r => !r.taskId);
         if (needsId.length > 0) {
-            if (collapsedRootRef.current && !pendingParentId.current) {
-                pendingParentId.current = collapsedRootRef.current;
-            }
             let tr = editor.state.tr;
             for (const row of needsId) {
                 const id = uuid();
                 row.taskId = id;
                 tr.setNodeMarkup(row.pmPos, undefined, { taskId: id });
-                const parentId = pendingParentId.current;
+
+                let parentId = pendingParentId.current;
                 pendingParentId.current = null;
+
+                // In focus mode, auto-set parent to the task above this new one
+                if (collapsedRootRef.current && !parentId) {
+                    const prevRow = rows[row.position - 1];
+                    parentId = prevRow?.taskId || collapsedRootRef.current;
+                }
                 const rruleData = pendingRruleData.current;
                 pendingRruleData.current = null;
                 dispatch(upsert({
