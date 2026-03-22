@@ -25,7 +25,7 @@ pub async fn create_task(content: String, position: i64, state: tauri::State<'_,
 }
 
 #[tauri::command]
-pub async fn upsert(task: Task, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
+pub async fn upsert(task: Task, state: tauri::State<'_, GlobalState>) -> Result<Vec<Task>, String> {
     state.upsert(&task).await.map_err(|e| e.to_string())
 }
 

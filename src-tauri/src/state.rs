@@ -12,7 +12,7 @@ pub struct Sheet {
     pub position: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub content: String,
@@ -25,6 +25,114 @@ pub struct Task {
     pub rrule: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    // Computed fields (not stored in DB)
+    #[serde(default)]
+    pub effective_due: Option<String>,
+    #[serde(default)]
+    pub is_deferred: bool,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TaskRow {
+    pub id: String,
+    pub content: String,
+    pub position: i64,
+    pub tags: String,
+    pub parent_id: Option<String>,
+    pub start_date: Option<String>,
+    pub due_date: Option<String>,
+    pub completed_at: Option<String>,
+    pub rrule: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<TaskRow> for Task {
+    fn from(r: TaskRow) -> Self {
+        Task {
+            id: r.id, content: r.content, position: r.position,
+            tags: r.tags, parent_id: r.parent_id,
+            start_date: r.start_date, due_date: r.due_date,
+            completed_at: r.completed_at, rrule: r.rrule,
+            created_at: r.created_at, updated_at: r.updated_at,
+            effective_due: None, is_deferred: false,
+        }
+    }
+}
+
+fn compute_effective_due(
+    task_id: &str,
+    tasks: &[Task],
+    cache: &mut std::collections::HashMap<String, Option<String>>,
+) -> Option<String> {
+    if let Some(cached) = cache.get(task_id) {
+        return cached.clone();
+    }
+
+    let task = tasks.iter().find(|t| t.id == task_id)?;
+    let mut earliest = task.due_date.clone();
+
+    for child in tasks.iter() {
+        if child.parent_id.as_deref() == Some(task_id) && child.completed_at.is_none() {
+            if let Some(child_due) = compute_effective_due(&child.id, tasks, cache) {
+                if earliest.is_none() || child_due < *earliest.as_ref().unwrap() {
+                    earliest = Some(child_due);
+                }
+            }
+        }
+    }
+
+    cache.insert(task_id.to_string(), earliest.clone());
+    earliest
+}
+
+fn compute_is_deferred(
+    task_id: &str,
+    tasks: &[Task],
+    now: &str,
+    cache: &mut std::collections::HashMap<String, bool>,
+) -> bool {
+    if let Some(&cached) = cache.get(task_id) {
+        return cached;
+    }
+
+    let task = match tasks.iter().find(|t| t.id == task_id) {
+        Some(t) => t,
+        None => { cache.insert(task_id.to_string(), false); return false; }
+    };
+
+    if task.completed_at.is_some() {
+        cache.insert(task_id.to_string(), false);
+        return false;
+    }
+
+    if let Some(ref start) = task.start_date {
+        if start.as_str() > now {
+            cache.insert(task_id.to_string(), true);
+            return true;
+        }
+    }
+
+    let result = if let Some(ref pid) = task.parent_id {
+        compute_is_deferred(pid, tasks, now, cache)
+    } else {
+        false
+    };
+
+    cache.insert(task_id.to_string(), result);
+    result
+}
+
+fn enrich_tasks(tasks: &mut Vec<Task>) {
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let snapshot: Vec<Task> = tasks.clone();
+    let mut due_cache = std::collections::HashMap::new();
+    let mut defer_cache = std::collections::HashMap::new();
+
+    for task in tasks.iter_mut() {
+        task.effective_due = compute_effective_due(&task.id, &snapshot, &mut due_cache);
+        task.is_deferred = compute_is_deferred(&task.id, &snapshot, &now, &mut defer_cache);
+    }
 }
 
 pub struct GlobalState {
@@ -57,12 +165,14 @@ impl GlobalState {
         let pool_guard = self.pool.read().await;
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
-        let tasks = sqlx::query_as::<_, Task>(
+        let rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
         )
         .fetch_all(pool)
         .await?;
 
+        let mut tasks: Vec<Task> = rows.into_iter().map(|r| r.into()).collect();
+        enrich_tasks(&mut tasks);
         Ok(tasks)
     }
 
@@ -81,20 +191,32 @@ impl GlobalState {
         .execute(pool)
         .await?;
 
-        let task = sqlx::query_as::<_, Task>(
+        let row = sqlx::query_as::<_, TaskRow>(
             "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks WHERE id = ?"
         )
         .bind(&id)
         .fetch_one(pool)
         .await?;
+        let task: Task = row.into();
 
         Ok(task)
     }
 
-    pub async fn upsert(&self, task: &Task) -> Result<()> {
+    pub async fn upsert(&self, task: &Task) -> Result<Vec<Task>> {
         let pool_guard = self.pool.read().await;
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
+        // Snapshot before
+        let before_rows = sqlx::query_as::<_, TaskRow>(
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
+        ).fetch_all(pool).await?;
+        let mut before: Vec<Task> = before_rows.into_iter().map(|r| r.into()).collect();
+        enrich_tasks(&mut before);
+        let before_map: std::collections::HashMap<String, (Option<String>, bool)> = before.iter()
+            .map(|t| (t.id.clone(), (t.effective_due.clone(), t.is_deferred)))
+            .collect();
+
+        // Write
         sqlx::query(
             "INSERT INTO tasks (id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
@@ -122,7 +244,23 @@ impl GlobalState {
         .execute(pool)
         .await?;
 
-        Ok(())
+        // Snapshot after and diff
+        let after_rows = sqlx::query_as::<_, TaskRow>(
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
+        ).fetch_all(pool).await?;
+        let mut after: Vec<Task> = after_rows.into_iter().map(|r| r.into()).collect();
+        enrich_tasks(&mut after);
+
+        // Return only tasks whose computed fields changed (plus the upserted task itself)
+        let changed: Vec<Task> = after.into_iter().filter(|t| {
+            if t.id == task.id { return true; }
+            match before_map.get(&t.id) {
+                Some((old_due, old_def)) => t.effective_due != *old_due || t.is_deferred != *old_def,
+                None => true, // new task
+            }
+        }).collect();
+
+        Ok(changed)
     }
 
     pub async fn remove(&self, id: &str) -> Result<()> {
@@ -213,11 +351,14 @@ impl GlobalState {
         let pool_guard = self.pool.read().await;
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
-        let tasks = sqlx::query_as::<_, Task>(
+        let rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
         )
         .fetch_all(pool)
         .await?;
+
+        let mut tasks: Vec<Task> = rows.into_iter().map(|r| r.into()).collect();
+        enrich_tasks(&mut tasks);
 
         if query.is_empty() {
             return Ok(tasks);

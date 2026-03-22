@@ -21,8 +21,8 @@ const upsert = createAsyncThunk('tasks/upsert', async (task) => {
         completed_at: task.completed_at ?? null,
         rrule: task.rrule ?? null,
     };
-    await invoke('upsert', { task: payload });
-    return payload;
+    const changed = await invoke('upsert', { task: payload });
+    return changed; // array of tasks with updated computed fields
 });
 
 const remove = createAsyncThunk('tasks/remove', async (id) => {
@@ -55,11 +55,14 @@ const tasksSlice = createSlice({
             })
             .addCase(createTask.rejected, (_, { error }) => console.error("create failed:", error))
             .addCase(upsert.fulfilled, (state, { payload }) => {
-                const idx = state.db.findIndex(t => t.id === payload.id);
-                if (idx >= 0) {
-                    state.db[idx] = { ...state.db[idx], ...payload };
-                } else {
-                    state.db.push(payload);
+                // payload is an array of changed tasks with fresh computed fields
+                for (const updated of payload) {
+                    const idx = state.db.findIndex(t => t.id === updated.id);
+                    if (idx >= 0) {
+                        state.db[idx] = { ...state.db[idx], ...updated };
+                    } else {
+                        state.db.push(updated);
+                    }
                 }
             })
             .addCase(remove.fulfilled, (state, { payload }) => {

@@ -160,18 +160,7 @@ function getSubtree(tasks, focusId) {
     return ids;
 }
 
-// Cascading deferral: a task is deferred if it or any ancestor has start_date > now
-function isDeferred(task, byId, nowDate, visited = new Set()) {
-    if (visited.has(task.id)) return false;
-    visited.add(task.id);
-    if (task.completed_at) return false; // completed tasks are never deferred
-    if (task.start_date && new Date(task.start_date) > nowDate) return true;
-    if (task.parent_id) {
-        const parent = byId.get(task.parent_id);
-        if (parent) return isDeferred(parent, byId, nowDate, visited);
-    }
-    return false;
-}
+// effective_due and is_deferred are computed by Rust and returned with each upsert
 
 // --- Component ---
 
@@ -329,19 +318,19 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         }
 
         const nowDate = new Date();
-        const byId = new Map(tasks.map(t => [t.id, t]));
         const rules = [];
 
         for (const task of tasks) {
             const sel = `.task-block[data-task-id="${task.id}"]`;
+            const effectiveDue = task.effective_due ? new Date(task.effective_due) : null;
 
             if (task.completed_at) {
                 rules.push(`${sel} .task-row p { text-decoration: line-through; opacity: 0.4; }`);
                 rules.push(`${sel} .task-check { color: var(--green) !important; }`);
-            } else if (isDeferred(task, byId, nowDate)) {
+            } else if (task.is_deferred) {
                 rules.push(`${sel} .task-row p { opacity: 0.3; }`);
-            } else if (task.due_date) {
-                const hoursLeft = (new Date(task.due_date) - nowDate) / 3600000;
+            } else if (effectiveDue) {
+                const hoursLeft = (effectiveDue - nowDate) / 3600000;
                 if (hoursLeft < 0) {
                     rules.push(`${sel} .task-row p { color: var(--red); }`);
                 } else if (hoursLeft < 24) {
@@ -354,9 +343,9 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             if (task.due_date) rules.push(`${sel} .task-due-btn { color: var(--orange) !important; }`);
             if (task.rrule) rules.push(`${sel} .task-rrule-btn { color: var(--blue) !important; }`);
 
-            // Due date label (right-aligned, hidden on hover when toolbar shows)
-            if (task.due_date && !task.completed_at) {
-                const due = moment(task.due_date);
+            // Due date label — show effective due (earliest in chain)
+            if (effectiveDue && !task.completed_at) {
+                const due = moment(effectiveDue);
                 const daysAway = due.diff(moment(), "days", true);
                 let dueLabel;
                 if (daysAway < -1) dueLabel = due.fromNow();                  // "2 days ago"
