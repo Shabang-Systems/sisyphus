@@ -1,6 +1,7 @@
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { useEditor, EditorContent, ReactRenderer } from "@tiptap/react";
+import { useSpring } from "@react-spring/web";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Node, mergeAttributes } from "@tiptap/core";
@@ -36,7 +37,9 @@ const TaskParagraph = Node.create({
                     ["i", { class: "fa-solid fa-check" }]],
                 ["p", mergeAttributes(HTMLAttributes), 0],
                 ["div", { class: "task-toolbar", contenteditable: "false" },
-                    ["span", { class: "task-reply-btn", "data-tooltip": "Reply" },
+                    ["span", { class: "task-sidebar-btn task-collapse-btn", "data-tooltip": "Focus" },
+                        ["i", { class: "fa-solid fa-compress" }]],
+                    ["span", { class: "task-sidebar-btn task-reply-btn", "data-tooltip": "Reply" },
                         ["i", { class: "fa-solid fa-angles-left" }]]]],
         ];
     },
@@ -88,12 +91,40 @@ function dedup(rows) {
     }
 }
 
+// Walk the full chain: ancestors to root + all DFS descendants
+function getSubtree(tasks, focusId) {
+    const byId = new Map(tasks.map(t => [t.id, t]));
+    const ids = new Set([focusId]);
+
+    // Walk up: parent chain to the top
+    let cur = byId.get(focusId);
+    while (cur?.parent_id) {
+        ids.add(cur.parent_id);
+        cur = byId.get(cur.parent_id);
+    }
+
+    // Walk down: all descendants via BFS
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const t of tasks) {
+            if (t.parent_id && ids.has(t.parent_id) && !ids.has(t.id)) {
+                ids.add(t.id);
+                changed = true;
+            }
+        }
+    }
+
+    return ids;
+}
+
 // --- Component ---
 
 export default function Editor() {
     const dispatch = useDispatch();
     const tasks = useSelector(state => state.tasks.db);
     const loading = useSelector(state => state.tasks.loading);
+    const [collapsedRoot, setCollapsedRoot] = useState(null);
 
     const suppress = useRef(false);
     const guard = useRef(false);
@@ -101,7 +132,9 @@ export default function Editor() {
     const visible = useRef(new Map());
     const updateTimer = useRef(null);
     const pendingParentId = useRef(null);
+    const collapsedRootRef = useRef(null);
 
+    useEffect(() => { collapsedRootRef.current = collapsedRoot; }, [collapsedRoot]);
     useEffect(() => { dispatch(snapshot()); }, [dispatch]);
 
     const runPipeline = useCallback((editor) => {
@@ -114,6 +147,11 @@ export default function Editor() {
         // ---- INSERTS ----
         const needsId = rows.filter(r => !r.taskId);
         if (needsId.length > 0) {
+            // In focus mode, auto-reply new tasks to the last visible task
+            if (collapsedRootRef.current && !pendingParentId.current) {
+                pendingParentId.current = collapsedRootRef.current;
+            }
+
             let tr = editor.state.tr;
             for (const row of needsId) {
                 const id = uuid();
@@ -171,6 +209,36 @@ export default function Editor() {
     useEffect(() => () => {
         if (updateTimer.current) clearTimeout(updateTimer.current);
     }, []);
+
+    // Collapse/expand: inject a <style> to hide non-visible tasks
+    // (ProseMirror re-renders DOM and wipes class changes, but can't override stylesheets)
+    useEffect(() => {
+        let style = document.getElementById("sisyphus-collapse-style");
+        if (!style) {
+            style = document.createElement("style");
+            style.id = "sisyphus-collapse-style";
+            document.head.appendChild(style);
+        }
+
+        if (!collapsedRoot) {
+            style.textContent = "";
+            return;
+        }
+
+        const visibleIds = getSubtree(tasks, collapsedRoot);
+        const allIds = tasks.map(t => t.id);
+        const hiddenIds = allIds.filter(id => !visibleIds.has(id));
+
+        if (hiddenIds.length === 0) {
+            style.textContent = "";
+            return;
+        }
+
+        const selectors = hiddenIds.map(id => `.task-block[data-task-id="${id}"]`).join(",\n");
+        style.textContent = `${selectors} { display: none !important; }\n.task-collapse-btn { display: none !important; }`;
+
+        return () => { style.textContent = ""; };
+    }, [collapsedRoot, tasks]);
 
     const editor = useEditor({
         extensions: [
@@ -336,6 +404,19 @@ export default function Editor() {
             return;
         }
 
+        // Collapse button click: toggle focus mode on a task's subtree
+        const collapseBtn = e.target.closest(".task-collapse-btn");
+        if (collapseBtn) {
+            e.stopPropagation();
+            e.preventDefault();
+            const block = collapseBtn.closest(".task-block");
+            const taskId = block?.getAttribute("data-task-id");
+            if (taskId) {
+                setCollapsedRoot(prev => prev === taskId ? null : taskId);
+            }
+            return;
+        }
+
         // Reply button click: insert new task at the bottom as a reply
         const replyBtn = e.target.closest(".task-reply-btn");
         if (replyBtn) {
@@ -364,9 +445,14 @@ export default function Editor() {
     return (
         <div className="editor">
             <div className="drag-region" data-tauri-drag-region />
+            {collapsedRoot && (
+                <button className="focus-exit-btn" onClick={() => setCollapsedRoot(null)}>
+                    <i className="fa-solid fa-xmark" /> Exit Focus
+                </button>
+            )}
             <div className="editor-content" onClick={handleClick} style={{ position: "relative" }}>
                 <EditorContent editor={editor} />
-                <ReplyArrows editorRef={editor?.view?.dom} />
+                <ReplyArrows editorRef={editor?.view?.dom} collapsedRoot={collapsedRoot} />
             </div>
         </div>
     );

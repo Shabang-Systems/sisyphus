@@ -11,6 +11,33 @@
     flex-shrink: 0;
 }
 
+/* Focus mode exit button */
+.focus-exit-btn {
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    z-index: 50000;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    font-size: 11px;
+    font-family: var(--font-family);
+    font-weight: 500;
+    color: var(--gray-3);
+    background: var(--bg);
+    border: 1px solid var(--gray-1);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 0.12s ease, border-color 0.12s ease;
+    -webkit-app-region: no-drag;
+}
+
+.focus-exit-btn:hover {
+    color: var(--fg);
+    border-color: var(--gray-2);
+}
+
 .editor-content {
     flex: 1;
     overflow-y: auto;
@@ -127,7 +154,7 @@
     gap: 4px;
     opacity: 0;
     transition: opacity 0.12s ease;
-    z-index: 20;
+    z-index: 100000;
     pointer-events: auto;
 }
 
@@ -135,7 +162,8 @@
     opacity: 1;
 }
 
-.task-reply-btn {
+.task-sidebar-btn {
+    position: relative;
     font-size: 11px;
     color: var(--gray-2);
     cursor: pointer;
@@ -145,18 +173,18 @@
     align-items: center;
 }
 
-.task-reply-btn {
-    position: relative;
-}
-
-.task-reply-btn:hover {
+.task-sidebar-btn:hover {
     color: var(--gray-3);
 }
 
-.task-toolbar [data-tooltip]:hover::after {
+.task-sidebar-btn.is-collapsed {
+    color: var(--blue);
+}
+
+.task-sidebar-btn[data-tooltip]:hover::after {
     left: 50%;
-    top: auto;
-    bottom: calc(100% + 6px);
+    top: calc(100% + 6px);
+    bottom: auto;
     transform: translateX(-50%);
 }
 

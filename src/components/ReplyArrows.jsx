@@ -1,40 +1,54 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useSelector } from "react-redux";
 import "./ReplyArrows.css";
 
-export default function ReplyArrows({ editorRef }) {
+export default function ReplyArrows({ editorRef, collapsedRoot }) {
     const tasks = useSelector(state => state.tasks.db);
     const [arrows, setArrows] = useState([]);
     const [hoveredTaskId, setHoveredTaskId] = useState(null);
-    const retryRef = useRef(null);
+    const [svgHeight, setSvgHeight] = useState(0);
+    // Shadow state: taskId → { y, visible }
+    const positionMap = useRef(new Map());
 
-    const computeArrows = useCallback(() => {
+    const updatePositions = useCallback(() => {
         if (!editorRef) return;
-
         const container = document.querySelector(".editor-content");
         if (!container) return;
+        const tiptap = container.querySelector(".tiptap");
+        if (!tiptap) return;
 
-        const containerRect = container.getBoundingClientRect();
-        const scrollTop = container.scrollTop;
+        const originRect = tiptap.getBoundingClientRect();
+        const map = new Map();
 
-        const relations = tasks.filter(t => t.parent_id);
-        if (!relations.length) { setArrows([]); return; }
+        const blocks = editorRef.querySelectorAll(".task-block");
+        blocks.forEach(block => {
+            const id = block.getAttribute("data-task-id");
+            if (!id) return;
+            const hidden = block.offsetParent === null;
+            if (hidden) return;
+            const rect = block.getBoundingClientRect();
+            map.set(id, rect.top - originRect.top + rect.height / 2);
+        });
 
-        const newArrows = [];
-        let missing = false;
-        for (const child of relations) {
-            const parentEl = editorRef.querySelector(`[data-task-id="${child.parent_id}"]`);
-            const childEl = editorRef.querySelector(`[data-task-id="${child.id}"]`);
-            if (!parentEl || !childEl) { missing = true; continue; }
+        positionMap.current = map;
+        setSvgHeight(tiptap.scrollHeight);
+    }, [editorRef]);
 
-            const parentRect = parentEl.getBoundingClientRect();
-            const childRect = childEl.getBoundingClientRect();
+    const buildArrows = useCallback(() => {
+        const map = positionMap.current;
+        if (!map.size) { setArrows([]); return; }
 
-            const parentY = parentRect.top - containerRect.top + scrollTop + parentRect.height / 2;
-            const childY = childRect.top - containerRect.top + scrollTop + childRect.height / 2;
-            const rightEdge = containerRect.width - 20;
+        const container = document.querySelector(".editor-content");
+        const rightEdge = container ? container.clientWidth - 20 : 300;
 
-            newArrows.push({
+        const result = [];
+        for (const child of tasks) {
+            if (!child.parent_id) continue;
+            const parentY = map.get(child.parent_id);
+            const childY = map.get(child.id);
+            if (parentY == null || childY == null) continue;
+
+            result.push({
                 key: `${child.parent_id}-${child.id}`,
                 parentId: child.parent_id,
                 childId: child.id,
@@ -44,36 +58,43 @@ export default function ReplyArrows({ editorRef }) {
             });
         }
 
-        setArrows(newArrows);
+        setArrows(result);
+    }, [tasks]);
 
-        if (missing && !retryRef.current) {
-            retryRef.current = setTimeout(() => {
-                retryRef.current = null;
-                computeArrows();
-            }, 500);
-        }
-    }, [tasks, editorRef]);
+    // Update shadow positions + rebuild arrows
+    const refresh = useCallback(() => {
+        updatePositions();
+        buildArrows();
+    }, [updatePositions, buildArrows]);
 
+    // On tasks/collapse change: update positions after a frame (layout settled)
     useEffect(() => {
-        computeArrows();
+        const raf = requestAnimationFrame(refresh);
+        return () => cancelAnimationFrame(raf);
+    }, [tasks, collapsedRoot, refresh]);
+
+    // On scroll: just rebuild arrows from shadow state (positions are relative, no DOM read needed)
+    useEffect(() => {
         const container = document.querySelector(".editor-content");
-        if (container) {
-            container.addEventListener("scroll", computeArrows);
-            return () => container.removeEventListener("scroll", computeArrows);
-        }
-    }, [computeArrows]);
+        if (!container) return;
+        // Only need to rebuild on scroll if we ever use viewport-relative positions
+        // With content-relative positions, arrows scroll with the SVG. No-op.
+    }, []);
 
+    // Observe DOM for tiptap re-renders (taskId stamps, etc.)
     useEffect(() => {
-        const timer = setTimeout(computeArrows, 200);
-        return () => clearTimeout(timer);
-    }, [tasks, computeArrows]);
+        if (!editorRef) return;
+        const observer = new MutationObserver(() => {
+            requestAnimationFrame(refresh);
+        });
+        observer.observe(editorRef, {
+            childList: true, subtree: true,
+            attributes: true, attributeFilter: ["data-task-id"],
+        });
+        return () => observer.disconnect();
+    }, [editorRef, refresh]);
 
-    useEffect(() => {
-        const timer = setTimeout(computeArrows, 1000);
-        return () => clearTimeout(timer);
-    }, [editorRef]);
-
-    // Track which task-block is hovered
+    // Hover tracking
     useEffect(() => {
         if (!editorRef) return;
         const onOver = (e) => {
@@ -92,22 +113,17 @@ export default function ReplyArrows({ editorRef }) {
     if (!arrows.length) return null;
 
     return (
-        <svg className="reply-arrows-overlay">
+        <svg className="reply-arrows-overlay" style={{ height: svgHeight || "100%" }}>
             {arrows.map(({ key, parentId, childId, parentY, childY, rightEdge }) => {
                 const x1 = rightEdge - 16;
                 const x2 = rightEdge;
-                const active = hoveredTaskId === parentId || hoveredTaskId === childId;
-                // Arrow tip pointing left at the child end
+                const active = hoveredTaskId === parentId;
                 const a = 5;
 
                 return (
                     <g key={key} className={"reply-arrow" + (active ? " active" : "")}>
-                        <path
-                            d={`M ${x1} ${parentY} L ${x2} ${parentY} L ${x2} ${childY} L ${x1} ${childY}`}
-                        />
-                        <path
-                            d={`M ${x1 + a} ${childY - a} L ${x1} ${childY} L ${x1 + a} ${childY + a}`}
-                        />
+                        <path d={`M ${x1} ${parentY} L ${x2} ${parentY} L ${x2} ${childY} L ${x1} ${childY}`} />
+                        <path d={`M ${x1 + a} ${childY - a} L ${x1} ${childY} L ${x1 + a} ${childY + a}`} />
                     </g>
                 );
             })}

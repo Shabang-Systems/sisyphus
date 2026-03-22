@@ -80,4 +80,5 @@ body {
     white-space: nowrap;
     pointer-events: none;
     line-height: 1.4;
+    z-index: 99999;
 }
