@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import Auth from "@views/Auth.jsx";
 import Editor from "@views/Editor.jsx";
+import Browse from "@views/Browse.jsx";
+import Action from "@views/Action.jsx";
 import strings from "@strings";
 import "./App.css";
 
@@ -13,12 +15,28 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
     return (
         <div className="bottom-nav">
             <div
-                className={"bottom-nav-button" + (activeView === "editor" ? " active" : "")}
-                onClick={() => onViewChange("editor")}
+                className={"bottom-nav-button" + (activeView === "action" ? " active" : "")}
+                onClick={() => onViewChange("action")}
                 data-tooltip-id="rootp"
                 data-tooltip-content={strings.TOOLTIPS.ACTION}
             >
+                <i className="fa-solid fa-people-pulling"></i>
+            </div>
+            <div
+                className={"bottom-nav-button" + (activeView === "editor" ? " active" : "")}
+                onClick={() => onViewChange("editor")}
+                data-tooltip-id="rootp"
+                data-tooltip-content={strings.TOOLTIPS.PLANNING}
+            >
                 <i className="fa-solid fa-person"></i>
+            </div>
+            <div
+                className={"bottom-nav-button" + (activeView === "browse" ? " active" : "")}
+                onClick={() => onViewChange("browse")}
+                data-tooltip-id="rootp"
+                data-tooltip-content={strings.TOOLTIPS.BROWSE}
+            >
+                <i className="fa-solid fa-person-chalkboard"></i>
             </div>
             <div
                 className="bottom-nav-button"
@@ -64,11 +82,13 @@ function App() {
 
     return (
         <Provider store={store}>
-            <Tooltip id="rootp" anchorSelect="[data-tooltip-id='rootp']" delayShow={300} delayHide={100} />
+            <Tooltip id="rootp" anchorSelect="[data-tooltip-id='rootp']" delayShow={0} delayHide={0} />
             {isReady ? (
                 <>
                     <Sidebar activeView={activeView} onViewChange={setActiveView} onLogout={logout} />
-                    <Editor />
+                    {activeView === "action" && <Action />}
+                    {activeView === "editor" && <Editor />}
+                    {activeView === "browse" && <Browse />}
                 </>
             ) : (
                 <Auth onAuth={auth} />

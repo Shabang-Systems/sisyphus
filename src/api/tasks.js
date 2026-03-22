@@ -2,6 +2,10 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
 import { snapshot } from "@api/utils.js";
 
+const search = createAsyncThunk('tasks/search', async (query) => {
+    return await invoke('search', { query });
+});
+
 const createTask = createAsyncThunk('tasks/create', async ({ content, position }) => {
     return await invoke('create_task', { content, position });
 });
@@ -38,7 +42,7 @@ const reorder = createAsyncThunk('tasks/reorder', async (ids) => {
 
 const tasksSlice = createSlice({
     name: "tasks",
-    initialState: { db: [], loading: true },
+    initialState: { db: [], loading: true, searchResults: null, searchQuery: "" },
     reducers: {},
     extraReducers: (builder) => {
         builder
@@ -70,10 +74,14 @@ const tasksSlice = createSlice({
                 state.db.sort((a, b) => (orderMap[a.id] ?? 0) - (orderMap[b.id] ?? 0));
                 state.db.forEach((t, i) => { t.position = i; });
             })
+            .addCase(search.fulfilled, (state, { payload, meta }) => {
+                state.searchResults = payload;
+                state.searchQuery = meta.arg;
+            })
             .addCase(upsert.rejected, (_, { error }) => console.error("upsert failed:", error))
             .addCase(remove.rejected, (_, { error }) => console.error("remove failed:", error));
     },
 });
 
-export { createTask, upsert, remove, setParent, reorder };
+export { createTask, upsert, remove, setParent, search, reorder };
 export default tasksSlice.reducer;

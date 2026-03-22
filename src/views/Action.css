@@ -1,0 +1,12 @@
+.action {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+}
+
+.action .drag-region {
+    height: 48px;
+    width: 100%;
+    flex-shrink: 0;
+}

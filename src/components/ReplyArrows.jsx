@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useSelector } from "react-redux";
 import "./ReplyArrows.css";
 
-export default function ReplyArrows({ editorRef, collapsedRoot }) {
+export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId }) {
     const tasks = useSelector(state => state.tasks.db);
     const [arrows, setArrows] = useState([]);
     const [hoveredTaskId, setHoveredTaskId] = useState(null);
@@ -117,7 +117,8 @@ export default function ReplyArrows({ editorRef, collapsedRoot }) {
             {arrows.map(({ key, parentId, childId, parentY, childY, rightEdge }) => {
                 const x1 = rightEdge - 16;
                 const x2 = rightEdge;
-                const active = hoveredTaskId === parentId || hoveredTaskId === childId;
+                const active = hoveredTaskId === parentId || hoveredTaskId === childId
+                    || focusedTaskId === parentId || focusedTaskId === childId;
                 const a = 5;
 
                 const focused = !!collapsedRoot;

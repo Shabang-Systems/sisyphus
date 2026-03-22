@@ -19,6 +19,11 @@ pub fn run() {
             commands::upsert,
             commands::remove,
             commands::set_parent,
+            commands::list_sheets,
+            commands::upsert_sheet,
+            commands::add_sheet,
+            commands::remove_sheet,
+            commands::search,
             commands::list_tags,
             commands::reorder,
         ])

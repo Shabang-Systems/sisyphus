@@ -1,4 +1,4 @@
-use crate::state::{GlobalState, Task};
+use crate::state::{GlobalState, Task, Sheet};
 
 #[tauri::command]
 pub async fn bootstrap(path: String, state: tauri::State<'_, GlobalState>) -> Result<bool, String> {
@@ -37,6 +37,31 @@ pub async fn remove(id: String, state: tauri::State<'_, GlobalState>) -> Result<
 #[tauri::command]
 pub async fn set_parent(id: String, parent_id: Option<String>, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
     state.set_parent(&id, parent_id.as_deref()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_sheets(state: tauri::State<'_, GlobalState>) -> Result<Vec<Sheet>, String> {
+    state.list_sheets().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn upsert_sheet(id: i64, query: String, state: tauri::State<'_, GlobalState>) -> Result<Sheet, String> {
+    state.upsert_sheet(id, &query).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn add_sheet(state: tauri::State<'_, GlobalState>) -> Result<Sheet, String> {
+    state.add_sheet().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_sheet(id: i64, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
+    state.remove_sheet(id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn search(query: String, state: tauri::State<'_, GlobalState>) -> Result<Vec<Task>, String> {
+    state.search(&query).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

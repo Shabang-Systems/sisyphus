@@ -1,0 +1,126 @@
+.browse {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    position: relative;
+}
+
+.browse .drag-region {
+    height: 48px;
+    width: 100%;
+    flex-shrink: 0;
+}
+
+.browse-search {
+    display: flex;
+    align-items: center;
+    margin: 0 58px 8px 71px;
+    padding: 6px 12px;
+    background: var(--gray-1);
+    border-radius: 6px;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.browse-search-icon {
+    color: var(--gray-3);
+    font-size: 12px;
+}
+
+.browse-search-input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    font-family: var(--font-family);
+    font-size: 14px;
+    color: var(--fg);
+    outline: none;
+}
+
+.browse-search-input::placeholder {
+    color: var(--gray-3);
+    opacity: 0.6;
+}
+
+/* Sheet navigation — cao style, absolute top-right */
+.browse-sheets {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 20000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 20px;
+    padding-right: 5px;
+}
+
+.browse-sheet-arrows {
+    margin-bottom: 10px;
+}
+
+.browse-sheet-btn {
+    display: block;
+    font-size: 10px;
+    color: var(--gray-3);
+    cursor: pointer;
+    padding: 3px;
+    transition: color 0.12s ease;
+}
+
+.browse-sheet-btn:hover { color: var(--fg); }
+.browse-sheet-btn.disabled { color: var(--gray-2); pointer-events: none; }
+
+.browse-sheet-dots {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.browse-sheet-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--gray-2);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+
+.browse-sheet-dot.active {
+    background: var(--fg) !important;
+}
+
+.browse-sheet-dot:hover {
+    background: var(--gray-3);
+}
+
+/* Empty state */
+.browse-empty {
+    margin: 16px 58px 0 71px;
+    padding: 12px;
+    border: 1.5px dashed var(--gray-2);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--gray-3);
+    font-size: 14px;
+    transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.browse-empty:hover {
+    border-color: var(--gray-3);
+    color: var(--fg);
+}
+
+.browse-empty-hint {
+    margin: 8px 58px 0 71px;
+    font-size: 12px;
+    color: var(--gray-3);
+}

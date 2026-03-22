@@ -6,6 +6,13 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Sheet {
+    pub id: i64,
+    pub query: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Task {
     pub id: String,
     pub content: String,
@@ -163,6 +170,81 @@ impl GlobalState {
         }
 
         Ok(all_tags.into_iter().collect())
+    }
+
+    pub async fn list_sheets(&self) -> Result<Vec<Sheet>> {
+        let pool_guard = self.pool.read().await;
+        let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
+        let sheets = sqlx::query_as::<_, Sheet>("SELECT id, query, position FROM sheets ORDER BY position ASC")
+            .fetch_all(pool).await?;
+        Ok(sheets)
+    }
+
+    pub async fn upsert_sheet(&self, id: i64, query: &str) -> Result<Sheet> {
+        let pool_guard = self.pool.read().await;
+        let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
+        sqlx::query("UPDATE sheets SET query = ? WHERE id = ?")
+            .bind(query).bind(id).execute(pool).await?;
+        let sheet = sqlx::query_as::<_, Sheet>("SELECT id, query, position FROM sheets WHERE id = ?")
+            .bind(id).fetch_one(pool).await?;
+        Ok(sheet)
+    }
+
+    pub async fn add_sheet(&self) -> Result<Sheet> {
+        let pool_guard = self.pool.read().await;
+        let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
+        let max_pos: (i64,) = sqlx::query_as("SELECT COALESCE(MAX(position), -1) FROM sheets")
+            .fetch_one(pool).await?;
+        sqlx::query("INSERT INTO sheets (query, position) VALUES ('', ?)")
+            .bind(max_pos.0 + 1).execute(pool).await?;
+        let sheet = sqlx::query_as::<_, Sheet>("SELECT id, query, position FROM sheets ORDER BY id DESC LIMIT 1")
+            .fetch_one(pool).await?;
+        Ok(sheet)
+    }
+
+    pub async fn remove_sheet(&self, id: i64) -> Result<()> {
+        let pool_guard = self.pool.read().await;
+        let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
+        sqlx::query("DELETE FROM sheets WHERE id = ?").bind(id).execute(pool).await?;
+        Ok(())
+    }
+
+    pub async fn search(&self, query: &str) -> Result<Vec<Task>> {
+        let pool_guard = self.pool.read().await;
+        let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
+
+        let tasks = sqlx::query_as::<_, Task>(
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
+        )
+        .fetch_all(pool)
+        .await?;
+
+        if query.is_empty() {
+            return Ok(tasks);
+        }
+
+        // Extract plain text from JSON content and match with regex
+        let text_re = regex::Regex::new(r#""text"\s*:\s*"([^"]+)""#).unwrap();
+        let search_re = regex::RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+            .unwrap_or_else(|_| regex::Regex::new(&regex::escape(query)).unwrap());
+
+        let filtered = tasks.into_iter().filter(|task| {
+            // Search in extracted text
+            for cap in text_re.captures_iter(&task.content) {
+                if search_re.is_match(&cap[1]) {
+                    return true;
+                }
+            }
+            // Also search in tags
+            if search_re.is_match(&task.tags) {
+                return true;
+            }
+            false
+        }).collect();
+
+        Ok(filtered)
     }
 
     pub async fn reorder(&self, ids: &[String]) -> Result<()> {

@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS sheets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO sheets (query, position) VALUES ('', 0);

@@ -9,4 +9,5 @@ export default {
     DUE: "mod+d",
     REPEAT: "mod+shift+r",
     COMPLETE: "mod+enter",
+    FIND: "mod+f",
 };

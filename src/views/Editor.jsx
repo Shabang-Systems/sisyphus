@@ -3,13 +3,15 @@ import { useDispatch, useSelector } from "react-redux";
 import { useEditor, EditorContent, ReactRenderer } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import { Node, mergeAttributes } from "@tiptap/core";
+import { Node, mergeAttributes, Extension } from "@tiptap/core";
 import { Fragment } from "@tiptap/pm/model";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { RRule } from "rrule";
 import moment from "moment";
 import { snapshot } from "@api/utils.js";
 import { tick } from "@api/ui.js";
-import { upsert, remove, setParent } from "@api/tasks.js";
+import { upsert, remove, setParent, search } from "@api/tasks.js";
 import { v4 as uuid } from "uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { Tag, extractTags } from "@components/TagExtension.js";
@@ -20,6 +22,54 @@ import shortcuts from "../shortcuts.js";
 import RRuleModal from "@components/RRuleModal.jsx";
 import strings from "@strings";
 import "./Editor.css";
+
+// --- Find highlight plugin ---
+
+const findPluginKey = new PluginKey("findHighlight");
+
+function createFindPlugin(queryRef, indexRef, matchesRef) {
+    return new Plugin({
+        key: findPluginKey,
+        state: {
+            init() { return DecorationSet.empty; },
+            apply(tr, old, oldState, newState) {
+                const q = queryRef.current;
+                if (!q) { matchesRef.current = []; return DecorationSet.empty; }
+
+                const decorations = [];
+                const matches = [];
+                try {
+                    const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+                    newState.doc.descendants((node, pos) => {
+                        if (node.isText) {
+                            let match;
+                            while ((match = re.exec(node.text)) !== null) {
+                                const from = pos + match.index;
+                                const to = from + match[0].length;
+                                matches.push({ from, to });
+                            }
+                        } else if (node.type.name === "tag" && node.attrs.id) {
+                            if (re.test(node.attrs.id)) {
+                                matches.push({ from: pos, to: pos + node.nodeSize });
+                            }
+                            re.lastIndex = 0;
+                        }
+                    });
+                } catch {}
+                matches.reverse();
+                matchesRef.current = matches;
+                // Rebuild decorations with reversed index
+                const decs = matches.map((m, i) =>
+                    Decoration.inline(m.from, m.to, { class: i === indexRef.current ? "find-active" : "find-match" })
+                );
+                return DecorationSet.create(newState.doc, decs);
+            },
+        },
+        props: {
+            decorations(state) { return this.getState(state); },
+        },
+    });
+}
 
 // --- Node ---
 
@@ -114,6 +164,7 @@ function getSubtree(tasks, focusId) {
 function isDeferred(task, byId, nowDate, visited = new Set()) {
     if (visited.has(task.id)) return false;
     visited.add(task.id);
+    if (task.completed_at) return false; // completed tasks are never deferred
     if (task.start_date && new Date(task.start_date) > nowDate) return true;
     if (task.parent_id) {
         const parent = byId.get(task.parent_id);
@@ -124,7 +175,9 @@ function isDeferred(task, byId, nowDate, visited = new Set()) {
 
 // --- Component ---
 
-export default function Editor() {
+export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "" }) {
+    const isBrowse = mode === "browse";
+    const searchQueryRef = useRef(searchQuery);
     const dispatch = useDispatch();
     const tasks = useSelector(state => state.tasks.db);
     const loading = useSelector(state => state.tasks.loading);
@@ -138,6 +191,15 @@ export default function Editor() {
     const [collapsedRoot, setCollapsedRoot] = useState(null);
     const [dateModal, setDateModal] = useState(null);   // { taskId, field }
     const [rruleModal, setRruleModal] = useState(null);  // { taskId }
+    const [focusedTaskId, setFocusedTaskId] = useState(null);
+    const [findBar, setFindBar] = useState(false);
+    const [findQuery, setFindQuery] = useState("");
+    const [findIndex, setFindIndex] = useState(0);
+    const findInputRef = useRef(null);
+    const findBarRef = useRef(false);
+    const findMatchesRef = useRef([]);
+    const findQueryRef = useRef("");
+    const findIndexRef = useRef(0);
 
     const suppress = useRef(false);
     const guard = useRef(false);
@@ -151,6 +213,9 @@ export default function Editor() {
     const dragState = useRef({ dragging: null, over: null });
 
     useEffect(() => { collapsedRootRef.current = collapsedRoot; }, [collapsedRoot]);
+    useEffect(() => { findBarRef.current = findBar; if (findBar && findInputRef.current) findInputRef.current.focus(); }, [findBar]);
+    // Find decoration refresh — moved after useEditor (see below)
+    useEffect(() => { searchQueryRef.current = searchQuery; }, [searchQuery]);
     useEffect(() => { tasksRef.current = tasks; }, [tasks]);
     useEffect(() => { dispatch(snapshot()); }, [dispatch]);
 
@@ -165,16 +230,31 @@ export default function Editor() {
 
         const needsId = rows.filter(r => !r.taskId);
         if (needsId.length > 0) {
+            // In browse mode, prefill empty new tasks with normalized search query
+            const browseQuery = isBrowse ? searchQueryRef.current : "";
+            const normalizedQuery = browseQuery ? browseQuery.replace(/[.*+?^${}()|[\]\\]/g, "") : "";
+
             let tr = editor.state.tr;
+            let needsSearchRefresh = false;
             for (const row of needsId) {
                 const id = uuid();
                 row.taskId = id;
+
+                // If empty paragraph in browse mode, insert the search text
+                const isEmpty = row.content === '{"type":"paragraph"}';
+                let content = row.content;
+                if (isEmpty && normalizedQuery) {
+                    content = JSON.stringify({ type: "paragraph", content: [{ type: "text", text: normalizedQuery }] });
+                    // Also insert text into the ProseMirror node
+                    const textNode = editor.state.schema.text(normalizedQuery);
+                    tr.insert(row.pmPos + 1, textNode);
+                }
+
                 tr.setNodeMarkup(row.pmPos, undefined, { taskId: id });
 
                 let parentId = pendingParentId.current;
                 pendingParentId.current = null;
 
-                // In focus mode, auto-set parent to the task above this new one
                 if (collapsedRootRef.current && !parentId) {
                     const prevRow = rows[row.position - 1];
                     parentId = prevRow?.taskId || collapsedRootRef.current;
@@ -182,7 +262,7 @@ export default function Editor() {
                 const rruleData = pendingRruleData.current;
                 pendingRruleData.current = null;
                 dispatch(upsert({
-                    id, content: row.content, position: row.position,
+                    id, content, position: row.position,
                     tags: rruleData?.tags || row.tags,
                     parent_id: rruleData?.parent_id || parentId,
                     start_date: rruleData?.start_date,
@@ -190,12 +270,20 @@ export default function Editor() {
                     rrule: rruleData?.rrule,
                     created_at: ts, updated_at: ts,
                 }));
-                visible.current.set(id, { content: row.content, position: row.position, created_at: ts });
+                visible.current.set(id, { content, position: row.position, created_at: ts });
+                needsSearchRefresh = true;
             }
             tr.setMeta("sync", true);
             guard.current = true;
             editor.view.dispatch(tr);
             guard.current = false;
+
+            // Re-trigger search so new tasks appear in results
+            if (isBrowse && needsSearchRefresh) {
+                // Re-trigger search immediately and after debounce settles
+                dispatch(search(searchQueryRef.current));
+                setTimeout(() => dispatch(search(searchQueryRef.current)), 400);
+            }
         }
 
         const currentIds = new Set(rows.map(r => r.taskId));
@@ -286,6 +374,27 @@ export default function Editor() {
         return () => { style.textContent = ""; };
     }, [tasks, clock]);
 
+    // --- Search filter styles ---
+
+    useEffect(() => {
+        let style = document.getElementById("sisyphus-search-style");
+        if (!style) {
+            style = document.createElement("style");
+            style.id = "sisyphus-search-style";
+            document.head.appendChild(style);
+        }
+        if (!filterTaskIds) { style.textContent = ""; return; }
+
+        // Don't hide tasks with empty data-task-id (brand new, not yet stamped)
+        const hiddenIds = tasks.map(t => t.id).filter(id => id && !filterTaskIds.has(id));
+        if (!hiddenIds.length) { style.textContent = ""; return; }
+
+        const selectors = hiddenIds.map(id => `.task-block[data-task-id="${id}"]`).join(",\n");
+        // Also hide empty-id blocks that aren't new (shouldn't exist, but safety)
+        style.textContent = `${selectors} { display: none !important; }`;
+        return () => { style.textContent = ""; };
+    }, [filterTaskIds, tasks]);
+
     // --- Collapse styles ---
 
     useEffect(() => {
@@ -357,6 +466,10 @@ export default function Editor() {
                 },
             }),
             Placeholder.configure({ placeholder: strings.VIEWS__EDITOR_PLACEHOLDER }),
+            Extension.create({
+                name: "findHighlight",
+                addProseMirrorPlugins: () => [createFindPlugin(findQueryRef, findIndexRef, findMatchesRef)],
+            }),
         ],
         content: "",
         onUpdate: ({ editor, transaction }) => {
@@ -370,9 +483,16 @@ export default function Editor() {
             const el = editor.view.dom;
             el.querySelectorAll(".task-block").forEach(b => b.classList.toggle("all-selected", isAll));
 
+            // Track focused task for arrow highlighting
             try {
                 const resolved = editor.state.doc.resolve(from);
-                if (resolved.index(0) === editor.state.doc.childCount - 1) {
+                const node = resolved.node(resolved.depth) || resolved.parent;
+                setFocusedTaskId(node?.attrs?.taskId || null);
+            } catch { setFocusedTaskId(null); }
+
+            try {
+                const resolved = editor.state.doc.resolve(from);
+                if (!isBrowse && resolved.index(0) === editor.state.doc.childCount - 1) {
                     const coords = editor.view.coordsAtPos(from);
                     const container = document.querySelector(".editor-content");
                     if (coords && container) {
@@ -396,6 +516,16 @@ export default function Editor() {
             } catch {}
         },
     });
+
+    // --- Find decoration refresh ---
+    useEffect(() => {
+        findQueryRef.current = findBar ? findQuery : "";
+        findIndexRef.current = findIndex;
+        if (editor) {
+            const tr = editor.state.tr.setMeta("findUpdate", true);
+            editor.view.dispatch(tr);
+        }
+    }, [findQuery, findIndex, findBar, editor]);
 
     // --- Manual drag-to-reorder ---
 
@@ -644,6 +774,28 @@ export default function Editor() {
         }
 
         function onKeyDown(e) {
+            if (matchShortcut(e, shortcuts.FIND)) {
+                e.preventDefault(); e.stopPropagation();
+                setFindBar(prev => !prev);
+                return;
+            }
+            if (e.key === "Escape" && findBarRef.current) {
+                e.preventDefault(); e.stopPropagation();
+                const matches = findMatchesRef.current;
+                const idx = findIndexRef.current;
+                if (editor && matches[idx]) editor.commands.setTextSelection(matches[idx].from);
+                setFindBar(false);
+                setFindQuery("");
+                setFindIndex(0);
+                editor?.commands.focus();
+                return;
+            }
+            // While find bar is open, block all keystrokes from reaching the editor
+            // (except Cmd+F and Escape handled above)
+            if (findBarRef.current) {
+                return;
+            }
+
             const taskId = getActiveTaskId();
             if (!taskId) return;
 
@@ -773,14 +925,14 @@ export default function Editor() {
 
     // --- Render ---
 
-    if (loading) return <div className="editor"><div className="drag-region" data-tauri-drag-region /></div>;
+    if (loading) return <div className="editor">{!isBrowse && <div className="drag-region" data-tauri-drag-region />}</div>;
 
     const dateModalTask = dateModal ? tasksRef.current.find(t => t.id === dateModal.taskId) : null;
     const rruleModalTask = rruleModal ? tasksRef.current.find(t => t.id === rruleModal.taskId) : null;
 
     return (
-        <div className="editor">
-            <div className="drag-region" data-tauri-drag-region />
+        <div className={isBrowse ? "editor editor-browse" : "editor"}>
+            {!isBrowse && <div className="drag-region" data-tauri-drag-region />}
             {collapsedRoot && (
                 <button className="focus-exit-btn" onClick={() => setCollapsedRoot(null)}>
                     <i className="fa-solid fa-xmark" /> {strings.VIEWS__EDITOR_EXIT_FOCUS}
@@ -788,7 +940,7 @@ export default function Editor() {
             )}
             <div className="editor-content" onClick={handleClick} style={{ position: "relative" }}>
                 <EditorContent editor={editor} />
-                <ReplyArrows editorRef={editor?.view?.dom} collapsedRoot={collapsedRoot} />
+                <ReplyArrows editorRef={editor?.view?.dom} collapsedRoot={collapsedRoot} focusedTaskId={focusedTaskId} />
             </div>
 
             {dateModal && dateModalTask && (
@@ -806,6 +958,74 @@ export default function Editor() {
                     onChange={(rule) => handleRruleChange(rruleModal.taskId, rule)}
                     onClose={() => { setRruleModal(null); editor?.commands.focus(); }}
                 />
+            )}
+
+            {findBar && (
+                <div className="find-bar">
+                    <i className="fa-solid fa-magnifying-glass find-bar-icon" />
+                    <input
+                        ref={findInputRef}
+                        className="find-bar-input"
+                        placeholder={strings.VIEWS__EDITOR_FIND}
+                        value={findQuery}
+                        onChange={e => {
+                            setFindQuery(e.target.value);
+                            setFindIndex(0);
+                            setTimeout(() => {
+                                const el = document.querySelector(".find-active");
+                                const container = document.querySelector(".editor-content");
+                                if (el && container) {
+                                    const elRect = el.getBoundingClientRect();
+                                    const contRect = container.getBoundingClientRect();
+                                    const target = elRect.top - contRect.top + container.scrollTop - container.clientHeight / 2;
+                                    container.scrollTo({ top: target, behavior: "smooth" });
+                                }
+                            }, 50);
+                        }}
+                        onKeyDown={e => {
+                            if (e.key === "Enter") {
+                                e.preventDefault();
+                                const total = findMatchesRef.current.length;
+                                if (total > 0) {
+                                    setFindIndex(prev => {
+                                        const next = e.shiftKey ? (prev - 1 + total) % total : (prev + 1) % total;
+                                        setTimeout(() => {
+                                            const el = document.querySelector(".find-active");
+                                            const container = document.querySelector(".editor-content");
+                                            if (el && container) {
+                                                const elRect = el.getBoundingClientRect();
+                                                const contRect = container.getBoundingClientRect();
+                                                const target = elRect.top - contRect.top + container.scrollTop - container.clientHeight / 2;
+                                                container.scrollTo({ top: target, behavior: "smooth" });
+                                            }
+                                        }, 0);
+                                        return next;
+                                    });
+                                }
+                            } else if (e.key === "Escape") {
+                                // Place cursor at current match position before closing
+                                const matches = findMatchesRef.current;
+                                const idx = findIndexRef.current;
+                                if (editor && matches[idx]) {
+                                    editor.commands.setTextSelection(matches[idx].from);
+                                }
+                                setFindBar(false);
+                                setFindQuery("");
+                                setFindIndex(0);
+                                editor?.commands.focus();
+                            }
+                        }}
+                    />
+                    {findMatchesRef.current.length > 0 && (
+                        <span className="find-bar-count">{findIndex + 1}/{findMatchesRef.current.length}</span>
+                    )}
+                    <i className="fa-solid fa-xmark find-bar-close" onClick={() => {
+                        const matches = findMatchesRef.current;
+                        const idx = findIndexRef.current;
+                        if (editor && matches[idx]) editor.commands.setTextSelection(matches[idx].from);
+                        setFindBar(false); setFindQuery(""); setFindIndex(0); editor?.commands.focus();
+                    }} />
+                </div>
             )}
         </div>
     );
