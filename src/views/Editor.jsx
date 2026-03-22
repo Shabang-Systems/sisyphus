@@ -16,6 +16,7 @@ import { Tag, extractTags } from "@components/TagExtension.js";
 import TagSuggestion from "@components/TagSuggestion.jsx";
 import ReplyArrows from "@components/ReplyArrows.jsx";
 import DateModal from "@components/DateModal.jsx";
+import shortcuts from "../shortcuts.js";
 import RRuleModal from "@components/RRuleModal.jsx";
 import strings from "@strings";
 import "./Editor.css";
@@ -617,6 +618,65 @@ export default function Editor() {
         }
     }, [dispatch, editor]);
 
+    // --- Keyboard shortcuts ---
+
+    const getActiveTaskId = useCallback(() => {
+        if (!editor) return null;
+        const { from } = editor.state.selection;
+        const resolved = editor.state.doc.resolve(from);
+        const node = resolved.node(resolved.depth) || resolved.parent;
+        return node?.attrs?.taskId || null;
+    }, [editor]);
+
+    useEffect(() => {
+        function matchShortcut(e, shortcut) {
+            const parts = shortcut.split("+");
+            const key = parts[parts.length - 1].toLowerCase();
+            const needsMod = parts.includes("mod");
+            const needsShift = parts.includes("shift");
+            const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+            const mod = isMac ? e.metaKey : e.ctrlKey;
+            return mod === needsMod && e.shiftKey === needsShift && e.key.toLowerCase() === key;
+        }
+
+        function onKeyDown(e) {
+            const taskId = getActiveTaskId();
+            if (!taskId) return;
+
+            if (matchShortcut(e, shortcuts.REPLY)) {
+                e.preventDefault(); e.stopPropagation();
+                pendingParentId.current = taskId;
+                const endPos = editor.state.doc.content.size;
+                editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
+                editor.commands.focus("end");
+            } else if (matchShortcut(e, shortcuts.FOCUS)) {
+                e.preventDefault(); e.stopPropagation();
+                setCollapsedRoot(prev => prev === taskId ? null : taskId);
+            } else if (matchShortcut(e, shortcuts.START)) {
+                e.preventDefault(); e.stopPropagation();
+                setRruleModal(null);
+                setDateModal(prev => prev?.taskId === taskId && prev?.field === "start_date" ? null : { taskId, field: "start_date" });
+            } else if (matchShortcut(e, shortcuts.DUE)) {
+                e.preventDefault(); e.stopPropagation();
+                setRruleModal(null);
+                setDateModal(prev => prev?.taskId === taskId && prev?.field === "due_date" ? null : { taskId, field: "due_date" });
+            } else if (matchShortcut(e, shortcuts.REPEAT)) {
+                e.preventDefault(); e.stopPropagation();
+                setDateModal(null);
+                setRruleModal(prev => prev?.taskId === taskId ? null : { taskId });
+            } else if (matchShortcut(e, shortcuts.COMPLETE)) {
+                e.preventDefault(); e.stopPropagation();
+                completeTask(taskId);
+            } else if (e.key === "Escape" && collapsedRootRef.current) {
+                e.preventDefault(); e.stopPropagation();
+                setCollapsedRoot(null);
+            }
+        }
+
+        document.addEventListener("keydown", onKeyDown, true);
+        return () => document.removeEventListener("keydown", onKeyDown, true);
+    }, [editor, getActiveTaskId, completeTask]);
+
     // --- Click handlers ---
 
     const handleClick = useCallback((e) => {
@@ -733,14 +793,14 @@ export default function Editor() {
                     label={dateModal.field === "start_date" ? strings.COMPONENTS__DATEMODAL_START : strings.COMPONENTS__DATEMODAL_DUE}
                     initialDate={dateModalTask[dateModal.field] ? new Date(dateModalTask[dateModal.field]) : null}
                     onDate={(d) => handleDateChange(dateModal.taskId, dateModal.field, d)}
-                    onClose={() => setDateModal(null)}
+                    onClose={() => { setDateModal(null); editor?.commands.focus(); }}
                 />
             )}
             {rruleModal && rruleModalTask && (
                 <RRuleModal
                     initialRrule={rruleModalTask.rrule}
                     onChange={(rule) => handleRruleChange(rruleModal.taskId, rule)}
-                    onClose={() => setRruleModal(null)}
+                    onClose={() => { setRruleModal(null); editor?.commands.focus(); }}
                 />
             )}
         </div>
