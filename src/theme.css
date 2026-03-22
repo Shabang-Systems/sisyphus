@@ -1,0 +1,23 @@
+@import url("./extern/fa/css/all.min.css");
+
+@font-face {
+    font-family: "Rubik";
+    src: url("./extern/Rubik.woff") format('woff');
+}
+
+:root {
+    --fg: #2F3338;
+    --bg: #F7F7F7;
+    --blue: #37A5BE;
+    --green: #26A671;
+    --orange: #F27200;
+    --yellow: #EAEDAD;
+    --gray-1: #EBEBEB;
+    --gray-2: #D5D5D5;
+    --gray-3: #929292;
+    --red: #FF3900;
+
+    --cursor: var(--blue);
+    --selection: var(--gray-2);
+    --font-family: "Rubik", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}

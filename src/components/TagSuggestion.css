@@ -1,0 +1,22 @@
+.tag-suggestion {
+    background: var(--bg);
+    border: 1px solid var(--gray-1);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    padding: 4px;
+    min-width: 140px;
+    font-size: 13px;
+    font-family: var(--font-family);
+}
+
+.tag-suggestion-item {
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--fg);
+}
+
+.tag-suggestion-item.selected,
+.tag-suggestion-item:hover {
+    background: var(--gray-1);
+}

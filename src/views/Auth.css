@@ -1,0 +1,50 @@
+.auth {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    width: 100%;
+    user-select: none;
+}
+
+.auth-content {
+    max-width: 420px;
+    padding: 0 24px;
+}
+
+.auth-head {
+    font-size: 20px;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.auth-subhead {
+    font-size: 14px;
+    line-height: 1.7;
+    opacity: 0.7;
+}
+
+.auth-subhead.data {
+    margin-top: 16px;
+    font-size: 12px;
+    opacity: 0.4;
+}
+
+.auth .button-inline {
+    display: inline;
+    cursor: pointer;
+    color: var(--cursor);
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.auth .button-inline:hover {
+    opacity: 0.7;
+}
+
+.auth .copyright {
+    margin-top: 32px;
+    font-size: 10px;
+    opacity: 0.3;
+}

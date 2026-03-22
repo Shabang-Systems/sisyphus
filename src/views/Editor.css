@@ -1,0 +1,191 @@
+.editor {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+}
+
+.drag-region {
+    height: 48px;
+    width: 100%;
+    flex-shrink: 0;
+}
+
+.editor-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 56px 70vh 36px;
+    cursor: text;
+}
+
+.editor-content .tiptap {
+    outline: none;
+    min-height: 100%;
+    font-family: var(--font-family);
+}
+
+.editor-content .tiptap:focus {
+    outline: none;
+}
+
+.editor-content .tiptap > *:first-child {
+    margin-top: 8px;
+}
+
+/* Task block: wraps divider + row */
+.task-block {
+    position: relative;
+}
+
+/* Divider between tasks — positioned over the gap, outside selection flow */
+.task-divider {
+    position: absolute;
+    top: -2px;
+    left: 8px;
+    right: 0;
+    height: 4px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    z-index: 10;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.task-divider-line {
+    border-top: 1.5px dotted var(--gray-2);
+    height: 0;
+    width: 100%;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.task-divider:hover .task-divider-line {
+    opacity: 0.5;
+}
+
+/* Prevent selection highlight on non-content elements */
+.task-check::selection,
+.task-check *::selection {
+    background: transparent !important;
+}
+
+/* Task row: wrapper that controls checkmark visibility on hover */
+.task-row {
+    display: flex;
+    align-items: center;
+    margin: 2px 0;
+    position: relative;
+}
+
+/* Checkmark: hidden by default, visible when row is hovered */
+.task-check {
+    flex-shrink: 0;
+    width: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: var(--gray-2);
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity 0.12s ease, color 0.12s ease;
+    user-select: none;
+    -webkit-user-select: none;
+    transform: translate(-2px, 1px);
+}
+
+.task-row:hover .task-check {
+    opacity: 1;
+}
+
+.task-check:hover {
+    color: var(--gray-3);
+}
+
+/* The paragraph (task text) */
+.task-row p {
+    flex: 1;
+    margin: 0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background 0.1s ease;
+}
+
+.task-row:hover p {
+    background: rgba(47, 51, 56, 0.04);
+}
+
+/* Right toolbar (extends beyond task-row) */
+.task-toolbar {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+    z-index: 20;
+    pointer-events: auto;
+}
+
+.task-row:hover .task-toolbar {
+    opacity: 1;
+}
+
+.task-reply-btn {
+    font-size: 11px;
+    color: var(--gray-2);
+    cursor: pointer;
+    padding: 3px;
+    transition: color 0.12s ease;
+    display: flex;
+    align-items: center;
+}
+
+.task-reply-btn {
+    position: relative;
+}
+
+.task-reply-btn:hover {
+    color: var(--gray-3);
+}
+
+.task-toolbar [data-tooltip]:hover::after {
+    left: 50%;
+    top: auto;
+    bottom: calc(100% + 6px);
+    transform: translateX(-50%);
+}
+
+
+/* Tag mentions */
+.tag-node {
+    color: var(--blue);
+    font-weight: 500;
+    cursor: default;
+}
+
+/* Selection: native text selection */
+.task-row p::selection,
+.task-row p *::selection {
+    background-color: #D5D5D5 !important;
+}
+
+/* Select-all highlight: applied via JS when allSelected */
+.task-block.all-selected .task-row p {
+    background: #D5D5D5;
+    border-radius: 4px;
+}
+
+/* Placeholder for empty editor */
+.editor-content .tiptap p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    float: left;
+    color: var(--fg);
+    opacity: 0.25;
+    pointer-events: none;
+    height: 0;
+}
