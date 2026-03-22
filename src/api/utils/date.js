@@ -1,0 +1,18 @@
+export function hydrateCalendar(year, month) {
+    let baseDate = new Date(year, month, 1);
+    let lastDate = new Date(year, month + 1, 0);
+    let prefixes = [...Array(baseDate.getDay()).keys()]
+        .map(x => x + 1)
+        .map(x => new Date(year, month, 1 - x))
+        .map(x => x.getDate())
+        .reverse();
+    let contents = [...Array(lastDate.getDate()).keys()]
+        .map(x => x + 1);
+    let suffixes = [];
+
+    while (prefixes.length + contents.length + suffixes.length < 42) {
+        suffixes.push(suffixes.length + 1);
+    }
+
+    return [prefixes, contents, suffixes];
+}

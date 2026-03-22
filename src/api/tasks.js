@@ -7,7 +7,16 @@ const createTask = createAsyncThunk('tasks/create', async ({ content, position }
 });
 
 const upsert = createAsyncThunk('tasks/upsert', async (task) => {
-    const payload = { ...task, tags: task.tags || "[]", parent_id: task.parent_id || null };
+    // Ensure all fields exist for Rust deserialization
+    const payload = {
+        ...task,
+        tags: task.tags ?? "[]",
+        parent_id: task.parent_id ?? null,
+        start_date: task.start_date ?? null,
+        due_date: task.due_date ?? null,
+        completed_at: task.completed_at ?? null,
+        rrule: task.rrule ?? null,
+    };
     await invoke('upsert', { task: payload });
     return payload;
 });
@@ -44,12 +53,7 @@ const tasksSlice = createSlice({
             .addCase(upsert.fulfilled, (state, { payload }) => {
                 const idx = state.db.findIndex(t => t.id === payload.id);
                 if (idx >= 0) {
-                    // Don't overwrite parent_id with null from content-only updates
-                    const merged = { ...state.db[idx], ...payload };
-                    if (payload.parent_id === null && state.db[idx].parent_id) {
-                        merged.parent_id = state.db[idx].parent_id;
-                    }
-                    state.db[idx] = merged;
+                    state.db[idx] = { ...state.db[idx], ...payload };
                 } else {
                     state.db.push(payload);
                 }

@@ -1,0 +1,21 @@
+.datemodal-backdrop {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 60000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.datemodal {
+    position: relative;
+}
+
+.datemodal-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--gray-3);
+    margin-bottom: 4px;
+    padding-left: 2px;
+    font-family: var(--font-family);
+}

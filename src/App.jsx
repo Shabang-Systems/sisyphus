@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Provider } from "react-redux";
+import { Tooltip } from "react-tooltip";
 import store from "@api/store.js";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -14,14 +15,16 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
             <div
                 className={"bottom-nav-button" + (activeView === "editor" ? " active" : "")}
                 onClick={() => onViewChange("editor")}
-                data-tooltip={strings.TOOLTIPS.ACTION}
+                data-tooltip-id="rootp"
+                data-tooltip-content={strings.TOOLTIPS.ACTION}
             >
                 <i className="fa-solid fa-person"></i>
             </div>
             <div
                 className="bottom-nav-button"
                 onClick={onLogout}
-                data-tooltip={strings.TOOLTIPS.LOGOUT}
+                data-tooltip-id="rootp"
+                data-tooltip-content={strings.TOOLTIPS.LOGOUT}
             >
                 <i className="fa-solid fa-person-through-window"></i>
             </div>
@@ -61,6 +64,7 @@ function App() {
 
     return (
         <Provider store={store}>
+            <Tooltip id="rootp" anchorSelect="[data-tooltip-id='rootp']" delayShow={300} delayHide={100} />
             {isReady ? (
                 <>
                     <Sidebar activeView={activeView} onViewChange={setActiveView} onLogout={logout} />

@@ -12,6 +12,10 @@ pub struct Task {
     pub position: i64,
     pub tags: String,
     pub parent_id: Option<String>,
+    pub start_date: Option<String>,
+    pub due_date: Option<String>,
+    pub completed_at: Option<String>,
+    pub rrule: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -47,7 +51,7 @@ impl GlobalState {
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
         let tasks = sqlx::query_as::<_, Task>(
-            "SELECT id, content, position, tags, parent_id, created_at, updated_at FROM tasks ORDER BY position ASC"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
         )
         .fetch_all(pool)
         .await?;
@@ -71,7 +75,7 @@ impl GlobalState {
         .await?;
 
         let task = sqlx::query_as::<_, Task>(
-            "SELECT id, content, position, tags, parent_id, created_at, updated_at FROM tasks WHERE id = ?"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks WHERE id = ?"
         )
         .bind(&id)
         .fetch_one(pool)
@@ -85,12 +89,16 @@ impl GlobalState {
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
         sqlx::query(
-            "INSERT INTO tasks (id, content, position, tags, parent_id, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO tasks (id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
              content = excluded.content, \
              position = excluded.position, \
              tags = excluded.tags, \
+             start_date = excluded.start_date, \
+             due_date = excluded.due_date, \
+             completed_at = excluded.completed_at, \
+             rrule = excluded.rrule, \
              updated_at = excluded.updated_at"
         )
         .bind(&task.id)
@@ -98,6 +106,10 @@ impl GlobalState {
         .bind(task.position)
         .bind(&task.tags)
         .bind(&task.parent_id)
+        .bind(&task.start_date)
+        .bind(&task.due_date)
+        .bind(&task.completed_at)
+        .bind(&task.rrule)
         .bind(&task.created_at)
         .bind(&task.updated_at)
         .execute(pool)

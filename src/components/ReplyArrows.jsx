@@ -117,7 +117,7 @@ export default function ReplyArrows({ editorRef, collapsedRoot }) {
             {arrows.map(({ key, parentId, childId, parentY, childY, rightEdge }) => {
                 const x1 = rightEdge - 16;
                 const x2 = rightEdge;
-                const active = hoveredTaskId === parentId;
+                const active = hoveredTaskId === parentId || hoveredTaskId === childId;
                 const a = 5;
 
                 return (

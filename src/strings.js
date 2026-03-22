@@ -13,9 +13,22 @@ export default {
 
     VIEWS__AUTH_LOGOUT_CONFIRM: "Are you sure you want to close this workspace?",
 
+    COMPONENTS__RRULEMODAL_REPEAT: "Repeat...",
+    COMPONENTS__RRULEMODAL_EVERY: "every so often",
+    COMPONENTS__RRULEMODAL_NONE: "no repeating rule",
+    COMPONENTS__DATEMODAL_START: "Start date",
+    COMPONENTS__DATEMODAL_DUE: "Due date",
+    COMPONENTS__DATEPICKER_TIME: "Time...",
+    COMPONENTS__DATEPICKER_DATETIME: "Date or time...",
+    VIEWS__EDITOR_EXIT_FOCUS: "Exit Focus",
+
     TOOLTIPS: {
         ACTION: "Tasks",
         LOGOUT: "Close Workspace",
+        DEFER: "Defer",
+        DUE: "Due",
+        REPEAT: "Repeat",
+        COMPLETE: "Complete",
     },
 
     TEMPORAL_GREETINGS: [

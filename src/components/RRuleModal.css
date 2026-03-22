@@ -1,0 +1,45 @@
+.rrulemodal-backdrop {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 60000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.rrulemodal {
+    background: var(--bg);
+    border: 1px solid var(--gray-1);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+    padding: 16px;
+    border-radius: 8px;
+    max-width: min(280px, 80vw);
+    font-family: var(--font-family);
+}
+
+.rrulemodal-header {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--gray-3);
+    margin-bottom: 8px;
+}
+
+.rrulemodal-input {
+    width: 100%;
+    border: none;
+    background: var(--gray-1);
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: var(--font-family);
+    color: var(--fg);
+    outline: none;
+}
+
+.rrulemodal-input::placeholder { opacity: 0.3; }
+
+.rrulemodal-hint {
+    color: var(--gray-3);
+    font-size: 12px;
+    margin-top: 10px;
+}

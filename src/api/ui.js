@@ -6,10 +6,14 @@ const ui = createSlice({
     initialState: {
         ready: false,
         filePath: null,
+        clock: Date.now(),
     },
     reducers: {
         setFilePath: (state, { payload }) => {
             state.filePath = payload;
+        },
+        tick: (state) => {
+            state.clock = Date.now();
         },
     },
     extraReducers: (builder) => {
@@ -23,5 +27,5 @@ const ui = createSlice({
     },
 });
 
-export const { setFilePath } = ui.actions;
+export const { setFilePath, tick } = ui.actions;
 export default ui.reducer;
