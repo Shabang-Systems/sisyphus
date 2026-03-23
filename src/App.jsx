@@ -10,6 +10,7 @@ import Editor from "@views/Editor.jsx";
 import Browse from "@views/Browse.jsx";
 import Action from "@views/Action.jsx";
 import Completed from "@views/Completed.jsx";
+import Settings from "@views/Settings.jsx";
 import Debug from "@views/Debug.jsx";
 import strings from "@strings";
 import "./App.css";
@@ -54,7 +55,7 @@ function useRebalance() {
     }, [tryFire]);
 }
 
-function Sidebar({ activeView, onViewChange, onLogout }) {
+function Sidebar({ activeView, onViewChange }) {
     return (
         <div className="bottom-nav">
             <div
@@ -98,12 +99,12 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
                 <i className="fa-solid fa-user-ninja"></i>
             </div>
             <div
-                className="bottom-nav-button"
-                onClick={onLogout}
+                className={"bottom-nav-button" + (activeView === "settings" ? " active" : "")}
+                onClick={() => onViewChange("settings")}
                 data-tooltip-id="rootp"
-                data-tooltip-content={strings.TOOLTIPS.LOGOUT}
+                data-tooltip-content={strings.TOOLTIPS.SETTINGS}
             >
-                <i className="fa-solid fa-person-through-window"></i>
+                <i className="fa-solid fa-gear"></i>
             </div>
         </div>
     );
@@ -155,12 +156,13 @@ function AppInner() {
             <Tooltip id="rootp" anchorSelect="[data-tooltip-id='rootp']" delayShow={0} delayHide={0} />
             {isReady ? (
                 <>
-                    <Sidebar activeView={activeView} onViewChange={setActiveView} onLogout={logout} />
+                    <Sidebar activeView={activeView} onViewChange={setActiveView} />
                     <RebalanceSpinner />
                     {activeView === "action" && <Action onJumpToTask={jumpToTask} triggerRebalance={triggerRebalance} />}
                     {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} replyToTaskId={replyToTaskId} onJumpHandled={() => { setJumpToTaskId(null); setReplyToTaskId(null); }} triggerRebalance={triggerRebalance} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                     {activeView === "completed" && <Completed />}
+                    {activeView === "settings" && <Settings onLogout={logout} triggerRebalance={triggerRebalance} />}
                     {activeView === "debug" && <Debug />}
                 </>
             ) : (

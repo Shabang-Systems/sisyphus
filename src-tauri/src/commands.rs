@@ -3,6 +3,7 @@ use chrono::Timelike;
 use crate::scheduler::{self, SchedulerOutput, TaskInput, SchedulerParams};
 use crate::energy;
 use crate::nb;
+use crate::calendar;
 
 #[tauri::command]
 pub async fn bootstrap(path: String, state: tauri::State<'_, GlobalState>) -> Result<bool, String> {
@@ -167,7 +168,7 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
         ));
     }
 
-    // Compute capacity consumed by completed and locked tasks
+    // Compute capacity consumed by completed, locked tasks, and calendar events
     let mut capacity_used = vec![0.0f64; scheduler::TOTAL_CHUNKS];
     for t in &tasks {
         if t.locked && t.completed_at.is_none() {
@@ -184,6 +185,18 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
             if chunk < scheduler::TOTAL_CHUNKS {
                 capacity_used[chunk] += scheduler::effort_to_slots(t.effort);
             }
+        }
+    }
+
+    // Fetch calendar busy times and subtract from capacity
+    let cal_urls_json = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'calendars'")
+        .fetch_optional(pool).await.map_err(|e| e.to_string())?.unwrap_or_else(|| "[]".to_string());
+    let cal_urls: Vec<String> = serde_json::from_str(&cal_urls_json).unwrap_or_default();
+    if !cal_urls.is_empty() {
+        let blocks = calendar::fetch_busy_blocks(&cal_urls).await;
+        let cal_used = calendar::busy_to_capacity(&blocks, start_h);
+        for i in 0..scheduler::TOTAL_CHUNKS {
+            capacity_used[i] += cal_used[i];
         }
     }
 
@@ -407,4 +420,31 @@ fn date_to_chunk(date: &Option<String>, default: usize) -> usize {
         let chunk = remaining_today + (day_diff - 1) * scheduler::CHUNKS_PER_DAY + target_h;
         chunk.min(scheduler::TOTAL_CHUNKS - 1)
     }
+}
+
+// ── Settings ──
+
+#[tauri::command]
+pub async fn get_setting(key: String, state: tauri::State<'_, GlobalState>) -> Result<Option<String>, String> {
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+    let row = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(&key)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+#[tauri::command]
+pub async fn set_setting(key: String, value: String, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(&key)
+        .bind(&value)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

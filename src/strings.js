@@ -39,6 +39,7 @@ export default {
         ACTION: "Action",
         BROWSE: "Browse",
         COMPLETED: "Completed",
+        SETTINGS: "Settings",
         DEBUG: "Debug",
         LOGOUT: "Logout",
         PREVIOUS_SHEET: "Previous Sheet",
@@ -58,6 +59,10 @@ export default {
     },
 
     CHUNK_LABELS: ["midnight", "dawn", "morning", "afternoon", "evening", "night"],
+    VIEWS__SETTINGS_TITLE: "settings",
+    VIEWS__SETTINGS_CALENDARS: "Calendars",
+    VIEWS__SETTINGS_CALENDARS_HINT: "Add ICS calendar URLs. Events will reduce available scheduling capacity.",
+    VIEWS__SETTINGS_ADD_CALENDAR: "add calendar",
     TEMPORAL_GREETINGS: [
         "good morning",
         "good afternoon",
