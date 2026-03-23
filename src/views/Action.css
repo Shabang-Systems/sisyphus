@@ -1,30 +1,142 @@
 .action {
-    display: flex;
-    flex-direction: column;
     height: 100%;
     width: 100%;
-}
-
-.action .drag-region {
-    height: 48px;
-    width: 100%;
-    flex-shrink: 0;
+    padding-top: 48px; /* space for title bar */
+    overflow-y: auto;
 }
 
 .action-main {
     margin-right: 60px;
-    margin-left: 20px;
-    margin-top: 4px;
-    flex: 1;
-    overflow-y: auto;
+    margin-left: 30px;
 }
 
 .action-greeting {
     margin-top: 1em;
     margin-bottom: 0.5em;
-    padding-left: 70px;
+    margin-left: 65px;
 }
 
+.action-timeline {
+    position: relative;
+}
+
+.action-day-header {
+    padding-top: 16px;
+    padding-bottom: 6px;
+    margin-top: 4px;
+    margin-left: 65px;
+}
+
+.action-day-header:first-child {
+    margin-top: 0;
+}
+
+.action-chunk {
+    position: relative;
+}
+
+.action-section-row {
+    height: 0;
+}
+
+.action-section-label {
+    position: absolute;
+    left: 0;
+    top: 4px;
+    width: 48px;
+    text-align: right;
+    font-size: 10px;
+    color: var(--gray-2);
+    white-space: nowrap;
+}
+
+.action-editor-wrap {
+    min-height: 30px;
+    margin-left: 65px;
+}
+
+/* Strip all editor chrome — the timeline handles layout */
+.action-editor-wrap .editor {
+    padding: 0 !important;
+    margin: 0 !important;
+    height: auto !important;
+}
+
+.action-editor-wrap .drag-region {
+    display: none !important;
+}
+
+.action-editor-wrap .editor-content {
+    padding: 0 !important;
+    margin: 0 !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    cursor: default;
+}
+
+.action-editor-wrap .ProseMirror {
+    padding: 0 !important;
+    min-height: auto !important;
+}
+
+.action-editor-wrap .tiptap > *:first-child {
+    margin-top: 0 !important;
+}
+
+/* Pull check + drag handle into the left margin so text is flush with headers */
+.action-editor-wrap .task-row {
+    margin: 0;
+    margin-left: -44px;
+}
+
+.action-editor-wrap .task-row p {
+    padding-left: 8px;
+}
+
+.action-editor-wrap .task-block {
+    margin: 0;
+}
+
+/* Background on check + drag so they cover section labels when hovered */
+.action-editor-wrap .task-check {
+    background: var(--bg);
+    padding: 3px 0;
+}
+
+.action-editor-wrap .task-drag-handle {
+    background: var(--bg);
+    padding: 3px 0;
+    position: relative;
+}
+
+.action-editor-wrap .task-drag-handle::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 100%;
+    width: 60px;
+    background: var(--bg);
+}
+
+/* Override hover to use task-block (wider hit area than task-row with negative margin) */
+.action-editor-wrap .task-block:hover .task-check,
+.action-editor-wrap .task-block:hover .task-drag-handle {
+    opacity: 1;
+}
+
+.action-editor-wrap .task-block:hover .task-toolbar {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Hide focus exit button */
+.action-editor-wrap .focus-exit-btn {
+    display: none !important;
+}
+
+/* Greeting text */
 .action-greeting-head {
     font-size: 18px;
     font-weight: 500;
@@ -36,112 +148,82 @@
     color: var(--gray-3);
 }
 
-.action-loading {
-    font-size: 13px;
-    color: var(--gray-3);
-}
-
-/* Timeline */
-
-.action-timeline {
-    padding-left: 70px;
-    position: relative;
-}
-
-.action-day-header {
-    padding-top: 16px;
-    padding-bottom: 6px;
-    margin-top: 4px;
-}
-
-.action-day-header:first-child {
-    margin-top: 0;
-}
-
 .action-day-label {
     font-size: 11px;
     color: var(--gray-3);
 }
 
-.action-task {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-    border-radius: 4px;
-}
-
-.action-checkbox {
-    width: 14px;
-    height: 14px;
-    border-radius: 2px;
-    border: 1.5px solid var(--gray-2);
-    transform: translateY(-0.5px);
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    font-size: 8px;
-    color: transparent;
-    transition: border-color 0.15s ease;
-}
-
-.action-checkbox:hover {
-    border-color: var(--gray-3);
-}
-
-.action-checkbox.checked {
-    border-color: var(--green);
-    background: var(--green);
-    color: #fff;
-}
-
-.action-task-name {
-    font-size: 14px;
-    color: var(--fg);
-}
-
-.action-tag {
-    color: var(--blue);
-    font-weight: 500;
-}
-
-.action-due-label {
-    margin-left: auto;
-    margin-right: 15px;
-    font-size: 11px;
+.action-loading {
+    font-size: 13px;
     color: var(--gray-3);
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-
-.action-due-label.overdue {
-    color: var(--red);
-}
-
-.action-due-label.due-soon {
-    color: var(--orange);
-}
-
-.action-section-row {
-    height: 0;
-    position: relative;
-}
-
-.action-section-label {
-    position: absolute;
-    left: -70px;
-    top: 6px;
-    width: 60px;
-    padding-right: 8px;
-    box-sizing: border-box;
-    text-align: right;
-    font-size: 10px;
-    color: var(--gray-2);
-    white-space: nowrap;
+    margin-left: 65px;
 }
 
 .action-spacer {
     height: 60vh;
+}
+
+/* Drag ghost */
+.action-drag-ghost {
+    position: fixed;
+    z-index: 10001;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    padding: 4px 10px;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+    white-space: nowrap;
+    max-width: 250px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Drag drop overlay */
+.action-drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(247, 247, 247, 0.95);
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 12px;
+    padding: 60px 40px;
+    overflow-y: auto;
+}
+
+.action-drop-day {
+    width: calc(50% - 6px);
+}
+
+.action-drop-day-label {
+    font-size: 11px;
+    color: var(--gray-3);
+    margin-bottom: 4px;
+}
+
+.action-drop-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 3px;
+}
+
+.action-drop-cell {
+    font-size: 9px;
+    color: var(--gray-3);
+    background: var(--gray-1);
+    border-radius: 4px;
+    padding: 8px 6px;
+    text-align: center;
+    cursor: pointer;
+    transition: background 0.1s ease, color 0.1s ease;
+}
+
+.action-drop-cell:hover,
+.action-drop-cell.active {
+    background: var(--blue);
+    color: #fff;
 }

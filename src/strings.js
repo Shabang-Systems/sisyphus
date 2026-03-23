@@ -48,6 +48,13 @@ export default {
         REPEAT: "Repeat",
         EFFORT: "Effort",
         COMPLETE: "Complete",
+        ACTION_VISIT: "View in planning",
+        ACTION_REPLY: "Reply to task",
+        ACTION_SCHEDULE: "Set schedule date",
+        ACTION_LOCK: "Lock to schedule",
+        ACTION_UNLOCK: "Unlock from schedule",
+        ACTION_EDIT: "Action (editable)",
+        ACTION_DRAG: "Drag to reschedule",
     },
 
     CHUNK_LABELS: ["midnight", "dawn", "morning", "afternoon", "evening", "night"],

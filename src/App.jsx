@@ -112,6 +112,7 @@ function App() {
                 <>
                     <Sidebar activeView={activeView} onViewChange={setActiveView} onLogout={logout} />
                     {activeView === "action" && <Action onJumpToTask={jumpToTask} />}
+
                     {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} onJumpHandled={() => setJumpToTaskId(null)} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                     {activeView === "completed" && <Completed />}

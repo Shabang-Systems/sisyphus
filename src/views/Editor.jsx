@@ -166,7 +166,7 @@ function getSubtree(tasks, focusId) {
 
 // --- Component ---
 
-export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, onJumpHandled = null, taskList = null }) {
+export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, onJumpHandled = null, taskList = null, scheduleDate = null, onTaskDrag = null }) {
     const isBrowse = mode === "browse";
     const searchQueryRef = useRef(searchQuery);
     const dispatch = useDispatch();
@@ -204,6 +204,8 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const collapsedRootRef = useRef(null);
     const tasksRef = useRef(tasks);
     const dragState = useRef({ dragging: null, over: null });
+    const onTaskDragRef = useRef(onTaskDrag);
+    useEffect(() => { onTaskDragRef.current = onTaskDrag; }, [onTaskDrag]);
     useEffect(() => { collapsedRootRef.current = collapsedRoot; }, [collapsedRoot]);
     useEffect(() => { findBarRef.current = findBar; if (findBar && findInputRef.current) findInputRef.current.focus(); }, [findBar]);
     // Find decoration refresh — moved after useEditor (see below)
@@ -246,6 +248,8 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                     start_date: rruleData?.start_date,
                     due_date: rruleData?.due_date,
                     rrule: rruleData?.rrule,
+                    schedule: scheduleDate || undefined,
+                    locked: scheduleDate ? true : undefined,
                     created_at: ts, updated_at: ts,
                 }));
                 visible.current.set(id, { content, position: row.position, created_at: ts });
@@ -562,7 +566,14 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             if (!block) return;
             e.preventDefault();
 
-            dragState.current.dragging = block.getAttribute("data-task-id");
+            const taskId = block.getAttribute("data-task-id");
+            // If external drag handler provided, use that instead of reorder
+            if (onTaskDragRef.current) {
+                onTaskDragRef.current(taskId, e);
+                return;
+            }
+
+            dragState.current.dragging = taskId;
             document.body.style.cursor = "grabbing";
             updateDragStyle();
         }
@@ -694,11 +705,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         loadTasks(active);
     }, [loading, editor]);
 
-    // Browse mode: reload when taskList changes
+    // Reload when taskList prop changes (browse mode and action-edit mode)
     useEffect(() => {
-        if (!isBrowse || !editor || loading) return;
+        if (!taskList || !editor || loading) return;
         hydrated.current = true;
-        loadTasks(taskList || []);
+        loadTasks(taskList);
     }, [taskList, editor]);
 
     // Load more tasks on scroll — planning: scroll-to-top prepends older tasks;

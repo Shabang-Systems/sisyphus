@@ -138,58 +138,45 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
         .map(|(id, tag, _)| (id.clone(), tag.clone()))
         .collect();
 
-    // Map tasks to scheduler input
-    let scheduler_tasks: Vec<TaskInput> = active.iter().map(|t| {
+    // Separate locked tasks (fixed schedule) from free tasks (to be solved)
+    let mut scheduler_tasks: Vec<TaskInput> = Vec::new();
+    for t in &active {
+        // Skip locked tasks — they don't enter the solver
+        if t.locked && t.schedule.is_some() { continue; }
+
         let tag = predicted_tags.get(&t.id).cloned().unwrap_or_else(|| "__untagged__".to_string());
-        // start_date: if absent or in the past → 0 (eligible now)
         let t_s = date_to_chunk_start(&t.start_date);
-        // due_date: if absent or in the past → full horizon (overdue = schedule ASAP, any slot)
         let t_f = date_to_chunk_end(&t.effective_due);
 
-        // Extract task name from content
         let name = text_re.captures(&t.content)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_else(|| t.id[..8.min(t.id.len())].to_string());
 
-        // If locked, fix to the scheduled chunk
-        let (t_s, t_f) = if t.locked {
-            if let Some(ref sched) = t.schedule {
-                let c = date_to_chunk(&Some(sched.clone()), 0);
-                (c, c)
-            } else {
-                (t_s, t_f)
-            }
-        } else {
-            (t_s, t_f)
-        };
-
-        TaskInput::new(
+        scheduler_tasks.push(TaskInput::new(
             t.id.clone(),
             scheduler::effort_to_slots(t.effort),
             t_s, t_f, tag,
             t.parent_id.clone(),
             name,
             start_h,
-        )
-    }).collect();
+        ));
+    }
 
-    // Compute capacity already consumed by completed and locked tasks
+    // Compute capacity consumed by completed and locked tasks
     let mut capacity_used = vec![0.0f64; scheduler::TOTAL_CHUNKS];
     for t in &tasks {
-        // Locked (accepted) tasks — use schedule date
         if t.locked && t.completed_at.is_none() {
             if let Some(ref sched) = t.schedule {
-                let chunk = date_to_chunk_start(&Some(sched.clone()));
+                let chunk = date_to_chunk(&Some(sched.clone()), 0);
                 if chunk < scheduler::TOTAL_CHUNKS {
                     capacity_used[chunk] += scheduler::effort_to_slots(t.effort);
                 }
             }
             continue;
         }
-        // Completed tasks — use completed_at as the time they consumed
         if let Some(ref done) = t.completed_at {
-            let chunk = date_to_chunk_start(&Some(done.clone()));
+            let chunk = date_to_chunk(&Some(done.clone()), 0);
             if chunk < scheduler::TOTAL_CHUNKS {
                 capacity_used[chunk] += scheduler::effort_to_slots(t.effort);
             }
@@ -198,6 +185,44 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
 
     let params = SchedulerParams::default();
     let output = scheduler::solve(&scheduler_tasks, &dirichlet, &debiased, &params, start_dow, start_h, &capacity_used);
+
+    // Write schedule dates to DB — use the earliest chunk per task
+    let mut earliest: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for alloc in &output.allocations {
+        let day_offset = alloc.day as i64;
+        let hour = alloc.hour_start as u32;
+        let sched_date = {
+            let d = chrono::Local::now().date_naive() + chrono::Duration::days(day_offset);
+            let dt = d.and_hms_opt(hour, 0, 0).unwrap();
+            dt.and_local_timezone(chrono::Local).single()
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_default()
+        };
+        for (tid, _slots) in &alloc.tasks {
+            earliest.entry(tid.clone())
+                .and_modify(|existing| { if sched_date < *existing { *existing = sched_date.clone(); } })
+                .or_insert(sched_date.clone());
+        }
+    }
+    for (tid, sched_date) in &earliest {
+        let _ = sqlx::query(
+            "UPDATE tasks SET schedule = ?, updated_at = datetime('now') WHERE id = ? AND (locked = 0 OR locked IS NULL)"
+        )
+        .bind(sched_date)
+        .bind(tid)
+        .execute(pool)
+        .await;
+    }
+
+    // Clear schedule for parked (unallocated, non-locked) tasks
+    for tid in &output.parked {
+        let _ = sqlx::query(
+            "UPDATE tasks SET schedule = NULL, updated_at = datetime('now') WHERE id = ? AND (locked = 0 OR locked IS NULL)"
+        )
+        .bind(tid)
+        .execute(pool)
+        .await;
+    }
 
     Ok(output)
 }
@@ -265,12 +290,50 @@ fn date_to_chunk_end(date: &Option<String>) -> usize {
     }
 }
 
-/// Converts an ISO date string to a chunk index relative to now.
-/// Returns `default` if the date is None or in the past. Used for locked task pinning.
+/// Converts an ISO date string to a scheduler chunk index, accounting for start_h offset.
+/// The scheduler's chunk 0 = the current 4-hour block. Chunks fill the rest of today,
+/// then wrap to midnight of the next day.
+/// Returns `default` if the date is None or unparseable.
 fn date_to_chunk(date: &Option<String>, default: usize) -> usize {
-    match date_to_hours_from_now(date) {
-        Some(h) if h > 0 => (h as usize / 4).min(scheduler::TOTAL_CHUNKS - 1),
-        Some(_) => default, // past
-        None => default,
+    let d = match date {
+        Some(s) => s,
+        None => return default,
+    };
+    let now = chrono::Local::now();
+    let target = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(d) {
+        dt.with_timezone(&chrono::Local)
+    } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(d, "%Y-%m-%d %H:%M:%S") {
+        dt.and_local_timezone(chrono::Local).single().unwrap_or(now)
+    } else {
+        return default;
+    };
+
+    // Compute which 4-hour block the target falls in, as a scheduler chunk index
+    let now_h = now.hour() as usize / 4; // start_h equivalent
+    let remaining_today = scheduler::CHUNKS_PER_DAY - now_h;
+
+    let diff = target.signed_duration_since(now);
+    if diff.num_seconds() < 0 {
+        // Past date — return 0 (earliest possible chunk)
+        return 0;
+    }
+
+    // Days and hour-of-day for the target
+    let target_day_start = target.date_naive().and_hms_opt(0, 0, 0).unwrap();
+    let now_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
+    let day_diff = (target_day_start - now_day_start).num_days() as usize;
+    let target_h = target.hour() as usize / 4; // 0-5 position within day
+
+    if day_diff == 0 {
+        // Same day: chunk = target_h - now_h (offset within today's remaining chunks)
+        if target_h >= now_h {
+            (target_h - now_h).min(scheduler::TOTAL_CHUNKS - 1)
+        } else {
+            0 // earlier today = past
+        }
+    } else {
+        // Future day: remaining_today chunks for rest of today, then full days
+        let chunk = remaining_today + (day_diff - 1) * scheduler::CHUNKS_PER_DAY + target_h;
+        chunk.min(scheduler::TOTAL_CHUNKS - 1)
     }
 }
