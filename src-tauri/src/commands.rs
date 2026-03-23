@@ -153,6 +153,9 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
             .map(|m| m.as_str().to_string())
             .unwrap_or_else(|| t.id[..8.min(t.id.len())].to_string());
 
+        // Compute current scheduled chunk for stability seeding
+        let current_chunk = t.schedule.as_ref().map(|s| date_to_chunk(&Some(s.clone()), 0));
+
         scheduler_tasks.push(TaskInput::new(
             t.id.clone(),
             scheduler::effort_to_slots(t.effort),
@@ -160,6 +163,7 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
             t.parent_id.clone(),
             name,
             start_h,
+            current_chunk,
         ));
     }
 

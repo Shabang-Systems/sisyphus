@@ -120,6 +120,8 @@ pub struct TaskInput {
     pub parent_id: Option<String>,
     /// Human-readable task name for display.
     pub name: String,
+    /// Current scheduled chunk (for stability seeding). None if unscheduled.
+    pub current_chunk: Option<usize>,
 }
 
 impl TaskInput {
@@ -128,11 +130,11 @@ impl TaskInput {
     pub fn new(
         id: String, w: f64, t_s: usize, t_f: usize,
         tag: String, parent_id: Option<String>, name: String,
-        start_h: usize,
+        start_h: usize, current_chunk: Option<usize>,
     ) -> Self {
         let t_f = t_f.min(TOTAL_CHUNKS - 1);
         let (t_s, t_f) = ensure_capacity(t_s, t_f, start_h);
-        Self { id, w, t_s, t_f, tag, parent_id, name }
+        Self { id, w, t_s, t_f, tag, parent_id, name, current_chunk }
     }
 }
 
@@ -789,7 +791,12 @@ fn greedy_pack_lambda(
     // Sort ALL (task, chunk) pairs by Λ descending — don't filter out negatives.
     // A task with Λ < 0 in some chunk is still schedulable if its preferred
     // chunk fills up. The greedy will skip completed tasks and full chunks.
-    let mut pairs: Vec<(usize, usize, f64)> = lambda.to_vec();
+    // Add small stability bonus to prefer current schedule chunk (tiebreaker only)
+    let stability_eps = 0.001;
+    let mut pairs: Vec<(usize, usize, f64)> = lambda.iter().map(|&(i, c, l)| {
+        let bonus = if tasks[i].current_chunk == Some(c) { stability_eps } else { 0.0 };
+        (i, c, l + bonus)
+    }).collect();
     pairs.sort_by(|a, b| {
         b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
             .then(a.0.cmp(&b.0))  // same task grouped

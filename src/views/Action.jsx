@@ -26,29 +26,17 @@ function dayLabel(dayOffset) {
 
 function now() { return new Date().toISOString().replace("T", " ").slice(0, 19); }
 
-export default function Action({ onJumpToTask }) {
+export default function Action({ onJumpToTask, triggerRebalance }) {
     const dispatch = useDispatch();
     const allTasks = useSelector(state => state.tasks.db);
     const taskMapMemo = useMemo(() => new Map(allTasks.map(t => [t.id, t])), [allTasks]);
     const taskMap = useRef(taskMapMemo);
     taskMap.current = taskMapMemo;
-    const [loading, setLoading] = useState(false);
     const [dragState, setDragState] = useState(null);
     const [dropTarget, setDropTarget] = useState(null);
     const dropTargetRef = useRef(null);
 
     useEffect(() => { dispatch(snapshot()); }, [dispatch]);
-
-    const solve = useCallback(async () => {
-        setLoading(true);
-        try {
-            await invoke("compute_schedule");
-            await dispatch(snapshot());
-        } catch { /* ignore */ }
-        setLoading(false);
-    }, [dispatch]);
-
-    useEffect(() => { solve(); }, [solve]);
 
     // Drag to reschedule
     const handleTaskDrag = useCallback((taskId, e) => {
@@ -60,12 +48,11 @@ export default function Action({ onJumpToTask }) {
     }, []);
 
     const handleDropEnter = useCallback((day, chunkIdx) => {
-        const dt = { day, chunkIdx };
-        dropTargetRef.current = dt;
-        setDropTarget(dt);
+        dropTargetRef.current = { day, chunkIdx };
+        setDropTarget({ day, chunkIdx });
     }, []);
 
-    const handleDropLeave = useCallback(() => {
+    const handleDropClear = useCallback(() => {
         dropTargetRef.current = null;
         setDropTarget(null);
     }, []);
@@ -94,6 +81,7 @@ export default function Action({ onJumpToTask }) {
                         locked: true,
                         updated_at: now(),
                     })).then(() => dispatch(snapshot()));
+                    if (triggerRebalance) triggerRebalance();
                 }
             }
         };
@@ -162,17 +150,42 @@ export default function Action({ onJumpToTask }) {
         );
     }, [allTasks]);
 
+    // Foveated rendering: render groups until we hit TASK_BUDGET tasks, load more on scroll
+    const TASK_BUDGET = 30;
+    const [taskBudget, setTaskBudget] = useState(TASK_BUDGET);
+    useEffect(() => { setTaskBudget(TASK_BUDGET); }, [groups]);
+
+    const renderedGroups = useMemo(() => {
+        let count = 0;
+        const result = [];
+        for (const item of groups) {
+            result.push(item);
+            if (item.type === "chunk") {
+                count += item.tasks.length;
+                if (count >= taskBudget) break;
+            }
+        }
+        return result;
+    }, [groups, taskBudget]);
+
+    const onScroll = useCallback((e) => {
+        const el = e.target;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
+            setTaskBudget(prev => {
+                const total = groups.reduce((s, g) => s + (g.type === "chunk" ? g.tasks.length : 0), 0);
+                return Math.min(prev + TASK_BUDGET, total);
+            });
+        }
+    }, [groups]);
+
     return (
-        <div className="action">
+        <div className="action" onScroll={onScroll}>
             <div className="action-main">
                 <div className="action-greeting">
                     <div className="action-greeting-head">{getGreeting()},</div>
                     <div className="action-greeting-sub">it's {moment().format("dddd, MMMM D")}.</div>
                 </div>
 
-                {loading && groups.length === 0 && (
-                    <div className="action-loading">computing schedule...</div>
-                )}
 
                 {parkedTasks.length > 0 && (
                     <div className="action-parked">
@@ -185,13 +198,14 @@ export default function Action({ onJumpToTask }) {
                                 taskList={parkedTasks}
                                 onTaskDrag={handleTaskDrag}
                                 onJumpToTask={onJumpToTask}
+                                triggerRebalance={triggerRebalance}
                             />
                         </div>
                     </div>
                 )}
 
                 <div className="action-timeline">
-                    {groups.map((item, i) =>
+                    {renderedGroups.map((item, i) =>
                         item.type === "day" ? (
                             <div key={`day-${item.dayDiff}`} className="action-day-header">
                                 <span className="action-day-label">{item.label}</span>
@@ -208,6 +222,7 @@ export default function Action({ onJumpToTask }) {
                                         jumpToTaskId={null}
                                         onTaskDrag={handleTaskDrag}
                                         onJumpToTask={onJumpToTask}
+                                        triggerRebalance={triggerRebalance}
                                         scheduleDate={(() => {
                                             const d = new Date();
                                             d.setDate(d.getDate() + item.dayDiff);
@@ -280,7 +295,7 @@ export default function Action({ onJumpToTask }) {
                                             className={`action-drop-cell${isActive ? " active" : ""}${isCurrent ? " current" : ""}`}
                                             style={bg ? { background: bg } : undefined}
                                             onMouseEnter={() => handleDropEnter(dayIdx, chunkIdx)}
-                                            onMouseLeave={handleDropLeave}
+                                            onMouseLeave={handleDropClear}
                                         />
                                     );
                                 })}

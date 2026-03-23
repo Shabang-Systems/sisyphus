@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
-import { Provider } from "react-redux";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Provider, useSelector, useDispatch } from "react-redux";
 import { Tooltip } from "react-tooltip";
 import store from "@api/store.js";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { rebalance } from "@api/ui.js";
 import Auth from "@views/Auth.jsx";
 import Editor from "@views/Editor.jsx";
 import Browse from "@views/Browse.jsx";
@@ -12,6 +13,46 @@ import Completed from "@views/Completed.jsx";
 import Debug from "@views/Debug.jsx";
 import strings from "@strings";
 import "./App.css";
+
+function RebalanceSpinner() {
+    const rebalancing = useSelector(state => state.ui.rebalancing);
+    if (!rebalancing) return null;
+    return <div className="rebalance-spinner" />;
+}
+
+// Global hook: debounced rebalance trigger
+// Defers execution if editor is focused at fire time; retries after blur
+function useRebalance() {
+    const dispatch = useDispatch();
+    const timerRef = useRef(null);
+    const pendingRef = useRef(false);
+
+    const tryFire = useCallback(() => {
+        const active = document.activeElement;
+        const inEditor = active?.closest?.(".ProseMirror");
+        if (inEditor) {
+            pendingRef.current = true;
+            return;
+        }
+        pendingRef.current = false;
+        dispatch(rebalance());
+    }, [dispatch]);
+
+    useEffect(() => {
+        const onBlur = () => {
+            if (pendingRef.current) {
+                setTimeout(tryFire, 500);
+            }
+        };
+        document.addEventListener("focusout", onBlur);
+        return () => document.removeEventListener("focusout", onBlur);
+    }, [tryFire]);
+
+    return useCallback(() => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(tryFire, 1500);
+    }, [tryFire]);
+}
 
 function Sidebar({ activeView, onViewChange, onLogout }) {
     return (
@@ -68,7 +109,8 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
     );
 }
 
-function App() {
+function AppInner() {
+    const triggerRebalance = useRebalance();
     const [isReady, setIsReady] = useState(false);
     const [activeView, setActiveView] = useState("action");
     const [jumpToTaskId, setJumpToTaskId] = useState(null);
@@ -109,14 +151,14 @@ function App() {
     }, []);
 
     return (
-        <Provider store={store}>
+        <>
             <Tooltip id="rootp" anchorSelect="[data-tooltip-id='rootp']" delayShow={0} delayHide={0} />
             {isReady ? (
                 <>
                     <Sidebar activeView={activeView} onViewChange={setActiveView} onLogout={logout} />
-                    {activeView === "action" && <Action onJumpToTask={jumpToTask} />}
-
-                    {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} replyToTaskId={replyToTaskId} onJumpHandled={() => { setJumpToTaskId(null); setReplyToTaskId(null); }} />}
+                    <RebalanceSpinner />
+                    {activeView === "action" && <Action onJumpToTask={jumpToTask} triggerRebalance={triggerRebalance} />}
+                    {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} replyToTaskId={replyToTaskId} onJumpHandled={() => { setJumpToTaskId(null); setReplyToTaskId(null); }} triggerRebalance={triggerRebalance} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                     {activeView === "completed" && <Completed />}
                     {activeView === "debug" && <Debug />}
@@ -124,6 +166,14 @@ function App() {
             ) : (
                 <Auth onAuth={auth} />
             )}
+        </>
+    );
+}
+
+function App() {
+    return (
+        <Provider store={store}>
+            <AppInner />
         </Provider>
     );
 }

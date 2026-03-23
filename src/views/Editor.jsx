@@ -170,7 +170,7 @@ function getSubtree(tasks, focusId) {
 
 // --- Component ---
 
-export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, replyToTaskId = null, onJumpHandled = null, taskList = null, scheduleDate = null, onTaskDrag = null, onJumpToTask = null }) {
+export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, replyToTaskId = null, onJumpHandled = null, taskList = null, scheduleDate = null, onTaskDrag = null, onJumpToTask = null, triggerRebalance = null }) {
     const isBrowse = mode === "browse";
     const searchQueryRef = useRef(searchQuery);
     const dispatch = useDispatch();
@@ -283,6 +283,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             editor.view.dispatch(tr);
             guard.current = false;
             if (taskList) localChangeRef.current = true;
+            if (triggerRebalance) triggerRebalance();
         }
 
         const currentIds = new Set(rows.map(r => r.taskId));
@@ -877,7 +878,6 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         const task = tasksRef.current.find(t => t.id === taskId);
         if (!task) return;
         if (field === "schedule") {
-            // Schedule sets both schedule and locked
             dispatch(upsert({
                 ...task,
                 schedule: date ? date.toISOString() : null,
@@ -891,6 +891,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 updated_at: now(),
             }));
         }
+        if (triggerRebalance) triggerRebalance();
     }, [dispatch]);
 
     const handleRruleChange = useCallback((taskId, rule) => {
@@ -981,7 +982,8 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 }
             } catch (e) { console.error("rrule error:", e); }
         }
-    }, [dispatch, editor]);
+        if (triggerRebalance) triggerRebalance();
+    }, [dispatch, editor, triggerRebalance]);
 
     // --- Keyboard shortcuts ---
 
@@ -1164,8 +1166,10 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 if (task) {
                     if (task.locked) {
                         dispatch(upsert({ ...task, locked: false, updated_at: now() }));
+                        if (triggerRebalance) triggerRebalance();
                     } else if (task.schedule) {
                         dispatch(upsert({ ...task, locked: true, updated_at: now() }));
+                        if (triggerRebalance) triggerRebalance();
                     } else {
                         // No schedule yet — open date picker
                         setRruleModal(null);

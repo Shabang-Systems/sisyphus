@@ -353,7 +353,6 @@
     outline-offset: -1.5px;
 }
 
-.action-drop-cell:hover,
 .action-drop-cell.active {
     background: var(--blue) !important;
 }

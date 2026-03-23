@@ -64,6 +64,31 @@ body {
     color: var(--gray-3);
 }
 
+/* Rebalance spinner */
+.rebalance-spinner {
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--blue);
+    z-index: 30000;
+    pointer-events: none;
+    animation: rebalance-pulse 1s ease-in infinite;
+}
+
+@keyframes rebalance-pulse {
+    0% {
+        transform: scale(0);
+        opacity: 1;
+    }
+    100% {
+        transform: scale(1.8);
+        opacity: 0;
+    }
+}
+
 /* Tooltip (react-tooltip) */
 #rootp {
     padding: 4px 10px;
