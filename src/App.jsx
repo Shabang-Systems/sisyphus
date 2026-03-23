@@ -8,6 +8,7 @@ import Auth from "@views/Auth.jsx";
 import Editor from "@views/Editor.jsx";
 import Browse from "@views/Browse.jsx";
 import Action from "@views/Action.jsx";
+import Debug from "@views/Debug.jsx";
 import strings from "@strings";
 import "./App.css";
 
@@ -37,6 +38,14 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
                 data-tooltip-content={strings.TOOLTIPS.BROWSE}
             >
                 <i className="fa-solid fa-person-chalkboard"></i>
+            </div>
+            <div
+                className={"bottom-nav-button" + (activeView === "debug" ? " active" : "")}
+                onClick={() => onViewChange("debug")}
+                data-tooltip-id="rootp"
+                data-tooltip-content={strings.TOOLTIPS.DEBUG}
+            >
+                <i className="fa-solid fa-bug"></i>
             </div>
             <div
                 className="bottom-nav-button"
@@ -96,6 +105,7 @@ function App() {
                     {activeView === "action" && <Action onJumpToTask={jumpToTask} />}
                     {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} onJumpHandled={() => setJumpToTaskId(null)} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
+                    {activeView === "debug" && <Debug />}
                 </>
             ) : (
                 <Auth onAuth={auth} />

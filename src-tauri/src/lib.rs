@@ -1,5 +1,8 @@
 mod commands;
 mod state;
+pub mod scheduler;
+pub mod energy;
+pub mod nb;
 
 use state::GlobalState;
 
@@ -26,6 +29,8 @@ pub fn run() {
             commands::search,
             commands::list_tags,
             commands::reorder,
+            commands::compute_schedule,
+            commands::accept_task_schedule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

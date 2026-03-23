@@ -257,6 +257,27 @@ impl GlobalState {
         .execute(pool)
         .await?;
 
+        // Update NB Model 2 if tags changed
+        let old_tags = before.iter()
+            .find(|t| t.id == task.id)
+            .map(|t| t.tags.clone())
+            .unwrap_or_else(|| "[]".to_string());
+        if task.tags != old_tags && task.tags != "[]" {
+            // Extract plain text from content JSON
+            let text_re = regex::Regex::new(r#""text"\s*:\s*"([^"]+)""#).unwrap();
+            let text: String = text_re.captures_iter(&task.content)
+                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !text.is_empty() {
+                if let Ok(tags) = serde_json::from_str::<Vec<String>>(&task.tags) {
+                    for tag in &tags {
+                        let _ = crate::nb::update_tag_model(pool, &text, tag).await;
+                    }
+                }
+            }
+        }
+
         // Snapshot after and diff
         let after_rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
