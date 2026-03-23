@@ -221,6 +221,10 @@
     color: var(--gray-3);
 }
 
+.task-effort-btn i {
+    font-size: 6px;
+}
+
 .task-sidebar-btn.is-collapsed {
     color: var(--blue);
 }

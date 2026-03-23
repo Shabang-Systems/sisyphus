@@ -53,6 +53,13 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
 function App() {
     const [isReady, setIsReady] = useState(false);
     const [activeView, setActiveView] = useState("editor");
+    const [jumpToTaskId, setJumpToTaskId] = useState(null);
+
+    // Jump to a task in Planning view from any page
+    const jumpToTask = useCallback((taskId) => {
+        setJumpToTaskId(taskId);
+        setActiveView("editor");
+    }, []);
 
     useEffect(() => {
         let workspace = localStorage.getItem("sisyphus__workspace");
@@ -86,9 +93,9 @@ function App() {
             {isReady ? (
                 <>
                     <Sidebar activeView={activeView} onViewChange={setActiveView} onLogout={logout} />
-                    {activeView === "action" && <Action />}
-                    {activeView === "editor" && <Editor />}
-                    {activeView === "browse" && <Browse />}
+                    {activeView === "action" && <Action onJumpToTask={jumpToTask} />}
+                    {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} onJumpHandled={() => setJumpToTaskId(null)} />}
+                    {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                 </>
             ) : (
                 <Auth onAuth={auth} />

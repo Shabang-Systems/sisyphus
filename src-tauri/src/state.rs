@@ -23,6 +23,9 @@ pub struct Task {
     pub due_date: Option<String>,
     pub completed_at: Option<String>,
     pub rrule: Option<String>,
+    pub effort: i64,
+    pub schedule: Option<String>,
+    pub locked: bool,
     pub created_at: String,
     pub updated_at: String,
     // Computed fields (not stored in DB)
@@ -43,6 +46,9 @@ pub struct TaskRow {
     pub due_date: Option<String>,
     pub completed_at: Option<String>,
     pub rrule: Option<String>,
+    pub effort: i64,
+    pub schedule: Option<String>,
+    pub locked: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -54,6 +60,7 @@ impl From<TaskRow> for Task {
             tags: r.tags, parent_id: r.parent_id,
             start_date: r.start_date, due_date: r.due_date,
             completed_at: r.completed_at, rrule: r.rrule,
+            effort: r.effort, schedule: r.schedule, locked: r.locked,
             created_at: r.created_at, updated_at: r.updated_at,
             effective_due: None, is_deferred: false,
         }
@@ -166,7 +173,7 @@ impl GlobalState {
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
         let rows = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
         )
         .fetch_all(pool)
         .await?;
@@ -192,7 +199,7 @@ impl GlobalState {
         .await?;
 
         let row = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks WHERE id = ?"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks WHERE id = ?"
         )
         .bind(&id)
         .fetch_one(pool)
@@ -208,7 +215,7 @@ impl GlobalState {
 
         // Snapshot before
         let before_rows = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
         ).fetch_all(pool).await?;
         let mut before: Vec<Task> = before_rows.into_iter().map(|r| r.into()).collect();
         enrich_tasks(&mut before);
@@ -218,8 +225,8 @@ impl GlobalState {
 
         // Write
         sqlx::query(
-            "INSERT INTO tasks (id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO tasks (id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
              content = excluded.content, \
              position = excluded.position, \
@@ -228,6 +235,9 @@ impl GlobalState {
              due_date = excluded.due_date, \
              completed_at = excluded.completed_at, \
              rrule = excluded.rrule, \
+             effort = excluded.effort, \
+             schedule = excluded.schedule, \
+             locked = excluded.locked, \
              updated_at = excluded.updated_at"
         )
         .bind(&task.id)
@@ -239,6 +249,9 @@ impl GlobalState {
         .bind(&task.due_date)
         .bind(&task.completed_at)
         .bind(&task.rrule)
+        .bind(task.effort)
+        .bind(&task.schedule)
+        .bind(task.locked)
         .bind(&task.created_at)
         .bind(&task.updated_at)
         .execute(pool)
@@ -246,7 +259,7 @@ impl GlobalState {
 
         // Snapshot after and diff
         let after_rows = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
         ).fetch_all(pool).await?;
         let mut after: Vec<Task> = after_rows.into_iter().map(|r| r.into()).collect();
         enrich_tasks(&mut after);
@@ -352,7 +365,7 @@ impl GlobalState {
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
         let rows = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, created_at, updated_at FROM tasks ORDER BY position ASC"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
         )
         .fetch_all(pool)
         .await?;

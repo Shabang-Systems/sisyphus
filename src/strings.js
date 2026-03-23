@@ -34,6 +34,7 @@ export default {
         DEFER: "Defer",
         DUE: "Due",
         REPEAT: "Repeat",
+        EFFORT: "Effort",
         COMPLETE: "Complete",
     },
 

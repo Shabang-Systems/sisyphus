@@ -8,6 +8,7 @@ export default {
     START: "mod+shift+s",
     DUE: "mod+d",
     REPEAT: "mod+shift+r",
+    EFFORT: "mod+e",
     COMPLETE: "mod+enter",
     FIND: "mod+f",
 };

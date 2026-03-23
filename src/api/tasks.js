@@ -20,6 +20,9 @@ const upsert = createAsyncThunk('tasks/upsert', async (task) => {
         due_date: task.due_date ?? null,
         completed_at: task.completed_at ?? null,
         rrule: task.rrule ?? null,
+        effort: task.effort ?? 0,
+        schedule: task.schedule ?? null,
+        locked: task.locked ?? false,
     };
     const changed = await invoke('upsert', { task: payload });
     return changed; // array of tasks with updated computed fields
