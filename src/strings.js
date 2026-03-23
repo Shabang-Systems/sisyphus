@@ -38,6 +38,7 @@ export default {
         PLANNING: "Planning",
         ACTION: "Action",
         BROWSE: "Browse",
+        COMPLETED: "Completed",
         DEBUG: "Debug",
         LOGOUT: "Logout",
         PREVIOUS_SHEET: "Previous Sheet",
@@ -49,6 +50,7 @@ export default {
         COMPLETE: "Complete",
     },
 
+    CHUNK_LABELS: ["midnight", "dawn", "morning", "afternoon", "evening", "night"],
     TEMPORAL_GREETINGS: [
         "good morning",
         "good afternoon",

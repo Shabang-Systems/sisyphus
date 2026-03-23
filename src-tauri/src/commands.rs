@@ -174,8 +174,30 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
         )
     }).collect();
 
+    // Compute capacity already consumed by completed and locked tasks
+    let mut capacity_used = vec![0.0f64; scheduler::TOTAL_CHUNKS];
+    for t in &tasks {
+        // Locked (accepted) tasks — use schedule date
+        if t.locked && t.completed_at.is_none() {
+            if let Some(ref sched) = t.schedule {
+                let chunk = date_to_chunk_start(&Some(sched.clone()));
+                if chunk < scheduler::TOTAL_CHUNKS {
+                    capacity_used[chunk] += scheduler::effort_to_slots(t.effort);
+                }
+            }
+            continue;
+        }
+        // Completed tasks — use completed_at as the time they consumed
+        if let Some(ref done) = t.completed_at {
+            let chunk = date_to_chunk_start(&Some(done.clone()));
+            if chunk < scheduler::TOTAL_CHUNKS {
+                capacity_used[chunk] += scheduler::effort_to_slots(t.effort);
+            }
+        }
+    }
+
     let params = SchedulerParams::default();
-    let output = scheduler::solve(&scheduler_tasks, &dirichlet, &debiased, &params, start_dow, start_h);
+    let output = scheduler::solve(&scheduler_tasks, &dirichlet, &debiased, &params, start_dow, start_h, &capacity_used);
 
     Ok(output)
 }
@@ -232,11 +254,14 @@ fn date_to_chunk_start(date: &Option<String>) -> usize {
     }
 }
 
-/// due_date → chunk. Absent or past → TOTAL_CHUNKS-1 (full horizon). Future → that chunk.
+/// due_date → chunk. Absent → TOTAL_CHUNKS-1 (full horizon).
+/// Past (overdue) → 0 (deadline already passed, maximum urgency).
+/// Future → that chunk.
 fn date_to_chunk_end(date: &Option<String>) -> usize {
     match date_to_hours_from_now(date) {
         Some(h) if h > 0 => (h as usize / 4).min(scheduler::TOTAL_CHUNKS - 1),
-        _ => scheduler::TOTAL_CHUNKS - 1,
+        Some(_) => 0, // overdue: deadline passed, treat as maximally urgent
+        None => scheduler::TOTAL_CHUNKS - 1,
     }
 }
 

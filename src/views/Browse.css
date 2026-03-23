@@ -116,8 +116,9 @@
     padding-top: 8px;
 }
 
-/* Hide dividers in browse mode — no task creation via midpoint click */
+/* Hide dividers and reply button in browse mode */
 .editor-browse .task-divider { display: none !important; }
+.editor-browse .task-reply-btn { display: none !important; }
 
 /* Empty state */
 .browse-empty {

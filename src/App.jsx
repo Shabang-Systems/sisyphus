@@ -8,6 +8,7 @@ import Auth from "@views/Auth.jsx";
 import Editor from "@views/Editor.jsx";
 import Browse from "@views/Browse.jsx";
 import Action from "@views/Action.jsx";
+import Completed from "@views/Completed.jsx";
 import Debug from "@views/Debug.jsx";
 import strings from "@strings";
 import "./App.css";
@@ -40,6 +41,14 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
                 <i className="fa-solid fa-person-hiking"></i>
             </div>
             <div
+                className={"bottom-nav-button" + (activeView === "completed" ? " active" : "")}
+                onClick={() => onViewChange("completed")}
+                data-tooltip-id="rootp"
+                data-tooltip-content={strings.TOOLTIPS.COMPLETED}
+            >
+                <i className="fa-solid fa-user-graduate"></i>
+            </div>
+            <div
                 className={"bottom-nav-button" + (activeView === "debug" ? " active" : "")}
                 onClick={() => onViewChange("debug")}
                 data-tooltip-id="rootp"
@@ -61,7 +70,7 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
 
 function App() {
     const [isReady, setIsReady] = useState(false);
-    const [activeView, setActiveView] = useState("editor");
+    const [activeView, setActiveView] = useState("action");
     const [jumpToTaskId, setJumpToTaskId] = useState(null);
 
     // Jump to a task in Planning view from any page
@@ -105,6 +114,7 @@ function App() {
                     {activeView === "action" && <Action onJumpToTask={jumpToTask} />}
                     {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} onJumpHandled={() => setJumpToTaskId(null)} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
+                    {activeView === "completed" && <Completed />}
                     {activeView === "debug" && <Debug />}
                 </>
             ) : (

@@ -346,6 +346,7 @@ pub fn solve(
     params: &SchedulerParams,
     start_dow: usize,
     start_h: usize, // within-day chunk position of chunk 0 (0–5, e.g. 3 for 12:00–16:00)
+    capacity_used: &[f64], // pre-consumed slots per chunk (from completed/locked tasks)
 ) -> SchedulerOutput {
     let n = tasks.len();
     if n == 0 {
@@ -369,8 +370,12 @@ pub fn solve(
         .map(|(i, t)| (t.clone(), i)).collect();
     let n_tags = tag_set.len();
 
-    // C(c): physical capacity from calendar
-    let cap: Vec<f64> = (0..TOTAL_CHUNKS).map(|c| get_chunk_capacity(c, start_h)).collect();
+    // C(c): physical capacity from calendar, minus pre-consumed slots
+    let cap: Vec<f64> = (0..TOTAL_CHUNKS).map(|c| {
+        let raw = get_chunk_capacity(c, start_h);
+        let used = if c < capacity_used.len() { capacity_used[c] } else { 0.0 };
+        (raw - used).max(0.0)
+    }).collect();
 
     // C_k(c): per-tag energy capacity from Dirichlet posterior mean × C(c)
     let mut energy_cap: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];

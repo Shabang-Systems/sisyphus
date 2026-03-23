@@ -438,13 +438,14 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                     },
                 },
             }),
-            Placeholder.configure({ placeholder: strings.VIEWS__EDITOR_PLACEHOLDER }),
+            ...(!isBrowse ? [Placeholder.configure({ placeholder: strings.VIEWS__EDITOR_PLACEHOLDER })] : []),
             Extension.create({
                 name: "findHighlight",
                 addProseMirrorPlugins: () => [createFindPlugin(findQueryRef, findIndexRef, findMatchesRef)],
             }),
         ],
         content: "",
+        editable: !isBrowse,
         onUpdate: ({ editor, transaction }) => {
             if (transaction.getMeta("sync")) return;
             runPipeline(editor);
@@ -658,8 +659,10 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         const sorted = [...taskArray].sort((a, b) => a.position - b.position);
         allTasksRef.current = sorted;
 
+        // Browse/completed: first PAGE_SIZE (most relevant at top). Planning: last PAGE_SIZE (newest at bottom).
         const startIdx = isBrowse ? 0 : Math.max(0, sorted.length - PAGE_SIZE);
-        const initialSlice = sorted.slice(startIdx);
+        const endIdx = isBrowse ? Math.min(PAGE_SIZE, sorted.length) : sorted.length;
+        const initialSlice = sorted.slice(startIdx, endIdx);
         loadedCountRef.current = initialSlice.length;
 
         const map = new Map();
@@ -682,12 +685,13 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         }, 0);
     }, [editor, isBrowse]);
 
-    // Initial hydration (planning mode)
+    // Initial hydration (planning mode — exclude completed tasks)
     useEffect(() => {
         if (loading || !editor || hydrated.current || isBrowse) return;
         hydrated.current = true;
-        if (tasks.length === 0) return;
-        loadTasks(tasks);
+        const active = tasks.filter(t => !t.completed_at);
+        if (active.length === 0) return;
+        loadTasks(active);
     }, [loading, editor]);
 
     // Browse mode: reload when taskList changes
@@ -697,57 +701,94 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         loadTasks(taskList || []);
     }, [taskList, editor]);
 
-    // Load more tasks when user scrolls to the top (planning mode only)
+    // Load more tasks on scroll — planning: scroll-to-top prepends older tasks;
+    // browse/completed: scroll-to-bottom appends older tasks.
     useEffect(() => {
-        if (!editor || isBrowse) return;
+        if (!editor) return;
         const container = document.querySelector(".editor-content");
         if (!container) return;
 
         const onScroll = () => {
-            if (container.scrollTop > 50) return; // not at top
-            const allTasks = allTasksRef.current;
+            const allItems = allTasksRef.current;
             const loaded = loadedCountRef.current;
-            if (loaded >= allTasks.length) return; // all loaded
+            if (loaded >= allItems.length) return;
 
-            // Load next PAGE_SIZE batch (prepend to editor)
-            const endIdx = allTasks.length - loaded;
-            const startIdx = Math.max(0, endIdx - PAGE_SIZE);
-            const batch = allTasks.slice(startIdx, endIdx);
-            if (batch.length === 0) return;
+            if (isBrowse) {
+                // Scroll-to-bottom: append next batch
+                const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+                if (distFromBottom > 50) return;
 
-            loadedCountRef.current += batch.length;
-            isLoadingMore.current = true;
+                const startIdx = loaded;
+                const endIdx = Math.min(allItems.length, startIdx + PAGE_SIZE);
+                const batch = allItems.slice(startIdx, endIdx);
+                if (batch.length === 0) return;
 
-            // Save scroll position to restore after prepending
-            const scrollHeight = container.scrollHeight;
+                loadedCountRef.current += batch.length;
+                isLoadingMore.current = true;
 
-            const newContent = batch.map(t => {
-                visible.current.set(t.id, { content: t.content, position: 0, created_at: t.created_at });
-                try {
-                    const p = JSON.parse(t.content);
-                    return { ...p, attrs: { ...(p.attrs || {}), taskId: t.id } };
-                } catch {
-                    return { type: "paragraph", attrs: { taskId: t.id }, content: [{ type: "text", text: t.content }] };
-                }
-            });
+                const newContent = batch.map(t => {
+                    visible.current.set(t.id, { content: t.content, position: 0, created_at: t.created_at });
+                    try {
+                        const p = JSON.parse(t.content);
+                        return { ...p, attrs: { ...(p.attrs || {}), taskId: t.id } };
+                    } catch {
+                        return { type: "paragraph", attrs: { taskId: t.id }, content: [{ type: "text", text: t.content }] };
+                    }
+                });
 
-            // Prepend: insert at position 0 in the ProseMirror doc
-            suppress.current = true;
-            const nodes = newContent.map(c => editor.state.schema.nodeFromJSON(c));
-            const fragment = Fragment.from(nodes);
-            const tr = editor.state.tr.insert(0, fragment);
-            tr.setMeta("sync", true);
-            guard.current = true;
-            editor.view.dispatch(tr);
-            guard.current = false;
+                suppress.current = true;
+                const nodes = newContent.map(c => editor.state.schema.nodeFromJSON(c));
+                const fragment = Fragment.from(nodes);
+                const endPos = editor.state.doc.content.size;
+                const tr = editor.state.tr.insert(endPos, fragment);
+                tr.setMeta("sync", true);
+                guard.current = true;
+                editor.view.dispatch(tr);
+                guard.current = false;
 
-            // Restore scroll position so it doesn't jump
-            requestAnimationFrame(() => {
-                const newScrollHeight = container.scrollHeight;
-                container.scrollTop = newScrollHeight - scrollHeight;
-                suppress.current = false;
-                isLoadingMore.current = false;
-            });
+                requestAnimationFrame(() => {
+                    suppress.current = false;
+                    isLoadingMore.current = false;
+                });
+            } else {
+                // Scroll-to-top: prepend older batch (planning mode)
+                if (container.scrollTop > 50) return;
+
+                const endIdx = allItems.length - loaded;
+                const startIdx = Math.max(0, endIdx - PAGE_SIZE);
+                const batch = allItems.slice(startIdx, endIdx);
+                if (batch.length === 0) return;
+
+                loadedCountRef.current += batch.length;
+                isLoadingMore.current = true;
+                const scrollHeight = container.scrollHeight;
+
+                const newContent = batch.map(t => {
+                    visible.current.set(t.id, { content: t.content, position: 0, created_at: t.created_at });
+                    try {
+                        const p = JSON.parse(t.content);
+                        return { ...p, attrs: { ...(p.attrs || {}), taskId: t.id } };
+                    } catch {
+                        return { type: "paragraph", attrs: { taskId: t.id }, content: [{ type: "text", text: t.content }] };
+                    }
+                });
+
+                suppress.current = true;
+                const nodes = newContent.map(c => editor.state.schema.nodeFromJSON(c));
+                const fragment = Fragment.from(nodes);
+                const tr = editor.state.tr.insert(0, fragment);
+                tr.setMeta("sync", true);
+                guard.current = true;
+                editor.view.dispatch(tr);
+                guard.current = false;
+
+                requestAnimationFrame(() => {
+                    const newScrollHeight = container.scrollHeight;
+                    container.scrollTop = newScrollHeight - scrollHeight;
+                    suppress.current = false;
+                    isLoadingMore.current = false;
+                });
+            }
         };
 
         container.addEventListener("scroll", onScroll, { passive: true });
