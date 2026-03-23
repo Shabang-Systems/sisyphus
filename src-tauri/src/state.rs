@@ -278,6 +278,33 @@ impl GlobalState {
             }
         }
 
+        // Update NB Model 1 (duration debiasing) if task was just completed
+        let old_task = before.iter().find(|t| t.id == task.id);
+        let was_completed = old_task.map(|t| t.completed_at.is_some()).unwrap_or(false);
+        let now_completed = task.completed_at.is_some();
+        if now_completed && !was_completed {
+            // Compute Δ = completion time - scheduled time (in slots)
+            if let Some(ref schedule) = old_task.and_then(|t| t.schedule.clone()).or(task.schedule.clone()) {
+                if let Some(ref completed_at) = task.completed_at {
+                    // Parse both as datetime, compute delta in 30-min slots
+                    let parse = |s: &str| -> Option<chrono::NaiveDateTime> {
+                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
+                            .or_else(|| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.naive_utc()))
+                    };
+                    if let (Some(sched_dt), Some(comp_dt)) = (parse(schedule), parse(completed_at)) {
+                        let delta_mins = (comp_dt - sched_dt).num_minutes().max(0) as f64;
+                        let delta_slots = delta_mins / 30.0;
+                        let tag = if let Ok(tags) = serde_json::from_str::<Vec<String>>(&task.tags) {
+                            tags.into_iter().next().unwrap_or_else(|| "__untagged__".to_string())
+                        } else {
+                            "__untagged__".to_string()
+                        };
+                        let _ = crate::nb::update_duration_model(pool, &tag, task.effort, delta_slots).await;
+                    }
+                }
+            }
+        }
+
         // Snapshot after and diff
         let after_rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
@@ -385,41 +412,33 @@ impl GlobalState {
         let pool_guard = self.pool.read().await;
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
 
+        if query.is_empty() {
+            let rows = sqlx::query_as::<_, TaskRow>(
+                "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
+            ).fetch_all(pool).await?;
+            let mut tasks: Vec<Task> = rows.into_iter().map(|r| r.into()).collect();
+            enrich_tasks(&mut tasks);
+            return Ok(tasks);
+        }
+
+        // Use SQLite LIKE for the search — pushes filtering to the DB engine.
+        // content and tags are both TEXT columns containing JSON; LIKE searches within them.
+        // Pass user's query directly — they can use % and _ for fuzzy matching
+        let like_pattern = format!("%{}%", query);
         let rows = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at FROM tasks ORDER BY position ASC"
+            "SELECT id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at \
+             FROM tasks \
+             WHERE content LIKE ? OR tags LIKE ? \
+             ORDER BY position ASC"
         )
+        .bind(&like_pattern)
+        .bind(&like_pattern)
         .fetch_all(pool)
         .await?;
 
         let mut tasks: Vec<Task> = rows.into_iter().map(|r| r.into()).collect();
         enrich_tasks(&mut tasks);
-
-        if query.is_empty() {
-            return Ok(tasks);
-        }
-
-        // Extract plain text from JSON content and match with regex
-        let text_re = regex::Regex::new(r#""text"\s*:\s*"([^"]+)""#).unwrap();
-        let search_re = regex::RegexBuilder::new(query)
-            .case_insensitive(true)
-            .build()
-            .unwrap_or_else(|_| regex::Regex::new(&regex::escape(query)).unwrap());
-
-        let filtered = tasks.into_iter().filter(|task| {
-            // Search in extracted text
-            for cap in text_re.captures_iter(&task.content) {
-                if search_re.is_match(&cap[1]) {
-                    return true;
-                }
-            }
-            // Also search in tags
-            if search_re.is_match(&task.tags) {
-                return true;
-            }
-            false
-        }).collect();
-
-        Ok(filtered)
+        Ok(tasks)
     }
 
     pub async fn reorder(&self, ids: &[String]) -> Result<()> {

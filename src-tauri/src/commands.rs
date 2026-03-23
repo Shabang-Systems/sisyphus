@@ -83,10 +83,15 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
     let pool_guard = state.pool.read().await;
     let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
 
-    // Fetch active tasks (not completed). Default effort to S (2) if unset.
+    // Fetch active tasks (not completed, not deferred, not empty)
     let tasks = state.snapshot().await.map_err(|e| e.to_string())?;
+    let text_check = regex::Regex::new(r#""text"\s*:\s*"[^"]+""#).unwrap();
     let active: Vec<&Task> = tasks.iter()
-        .filter(|t| t.completed_at.is_none())
+        .filter(|t| {
+            t.completed_at.is_none()
+            && !t.is_deferred
+            && text_check.is_match(&t.content) // has actual text content
+        })
         .collect();
 
     // Load models
@@ -136,9 +141,10 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
     // Map tasks to scheduler input
     let scheduler_tasks: Vec<TaskInput> = active.iter().map(|t| {
         let tag = predicted_tags.get(&t.id).cloned().unwrap_or_else(|| "__untagged__".to_string());
-        let t_s = date_to_chunk(&t.start_date, 0);
-        // Use effective_due (earliest deadline in dependency chain) instead of own due_date
-        let t_f = date_to_chunk(&t.effective_due, scheduler::TOTAL_CHUNKS - 1);
+        // start_date: if absent or in the past → 0 (eligible now)
+        let t_s = date_to_chunk_start(&t.start_date);
+        // due_date: if absent or in the past → full horizon (overdue = schedule ASAP, any slot)
+        let t_f = date_to_chunk_end(&t.effective_due);
 
         // Extract task name from content
         let name = text_re.captures(&t.content)
@@ -158,15 +164,14 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
             (t_s, t_f)
         };
 
-        TaskInput {
-            id: t.id.clone(),
-            w: scheduler::effort_to_slots(t.effort),
-            t_s,
-            t_f,
-            tag,
-            parent_id: t.parent_id.clone(),
+        TaskInput::new(
+            t.id.clone(),
+            scheduler::effort_to_slots(t.effort),
+            t_s, t_f, tag,
+            t.parent_id.clone(),
             name,
-        }
+            start_h,
+        )
     }).collect();
 
     let params = SchedulerParams::default();
@@ -205,27 +210,42 @@ fn extract_first_tag(tags_json: &str) -> String {
     }
 }
 
-/// Converts an ISO date string to a chunk index relative to now.
-/// Returns `default` if the date is None or in the past.
-fn date_to_chunk(date: &Option<String>, default: usize) -> usize {
-    match date {
-        Some(d) => {
-            let now = chrono::Local::now();
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(d) {
-                let diff = dt.signed_duration_since(now);
-                let hours = diff.num_hours().max(0) as usize;
-                let chunk = hours / 4;
-                chunk.min(scheduler::TOTAL_CHUNKS - 1)
-            } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(d, "%Y-%m-%d %H:%M:%S") {
-                let local = chrono::Local::now().naive_local();
-                let diff = dt.signed_duration_since(local);
-                let hours = diff.num_hours().max(0) as usize;
-                let chunk = hours / 4;
-                chunk.min(scheduler::TOTAL_CHUNKS - 1)
-            } else {
-                default
-            }
+/// Parses a date string into hours-from-now. Returns None if unparseable or absent.
+fn date_to_hours_from_now(date: &Option<String>) -> Option<i64> {
+    date.as_ref().and_then(|d| {
+        let now = chrono::Local::now();
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(d) {
+            Some(dt.signed_duration_since(now).num_hours())
+        } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(d, "%Y-%m-%d %H:%M:%S") {
+            Some(dt.signed_duration_since(now.naive_local()).num_hours())
+        } else {
+            None
         }
+    })
+}
+
+/// start_date → chunk. Absent or past → 0 (eligible now). Future → that chunk.
+fn date_to_chunk_start(date: &Option<String>) -> usize {
+    match date_to_hours_from_now(date) {
+        Some(h) if h > 0 => (h as usize / 4).min(scheduler::TOTAL_CHUNKS - 1),
+        _ => 0,
+    }
+}
+
+/// due_date → chunk. Absent or past → TOTAL_CHUNKS-1 (full horizon). Future → that chunk.
+fn date_to_chunk_end(date: &Option<String>) -> usize {
+    match date_to_hours_from_now(date) {
+        Some(h) if h > 0 => (h as usize / 4).min(scheduler::TOTAL_CHUNKS - 1),
+        _ => scheduler::TOTAL_CHUNKS - 1,
+    }
+}
+
+/// Converts an ISO date string to a chunk index relative to now.
+/// Returns `default` if the date is None or in the past. Used for locked task pinning.
+fn date_to_chunk(date: &Option<String>, default: usize) -> usize {
+    match date_to_hours_from_now(date) {
+        Some(h) if h > 0 => (h as usize / 4).min(scheduler::TOTAL_CHUNKS - 1),
+        Some(_) => default, // past
         None => default,
     }
 }

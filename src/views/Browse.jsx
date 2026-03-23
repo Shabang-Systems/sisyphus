@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
 import { search, upsert } from "@api/tasks.js";
@@ -30,9 +30,9 @@ export default function Browse() {
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef.current = setTimeout(() => {
             dispatch(search(query));
-        }, 200);
+        }, 400);
         return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-    }, [query, tasks, dispatch]);
+    }, [query, dispatch]);
 
     useEffect(() => {
         if (!currentSheet) return;
@@ -86,8 +86,17 @@ export default function Browse() {
         }
     }, [currentIndex, sheets, goToSheet]);
 
+    const isEmpty = !query;
     const noResults = query && searchResults && searchResults.length === 0;
-    const filterIds = query && searchResults ? new Set(searchResults.map(t => t.id)) : null;
+    const tooMany = query && searchResults && searchResults.length > 300;
+    const filterIds = useMemo(() => {
+        return query && searchResults && !tooMany ? new Set(searchResults.map(t => t.id)) : null;
+    }, [query, searchResults, tooMany]);
+
+    const browseTaskList = useMemo(() => {
+        if (!query || !searchResults || tooMany) return null;
+        return searchResults;
+    }, [query, searchResults, tooMany]);
 
     const createFromSearch = useCallback(() => {
         const normalized = query.replace(/[.*+?^${}()|[\]\\]/g, "");
@@ -115,6 +124,10 @@ export default function Browse() {
                     value={query}
                     onChange={e => setQuery(e.target.value)}
                     autoFocus
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
                 />
             </div>
 
@@ -141,16 +154,29 @@ export default function Browse() {
                 </ul>
             </div>
 
-            {noResults ? (
-                <div>
-                    <div className="browse-empty" onClick={createFromSearch}>
-                        <i className="fa-solid fa-plus" />
+            <div className="browse-editor-container">
+                <Editor mode="browse" filterTaskIds={filterIds} searchQuery={query} taskList={browseTaskList} />
+                {isEmpty && (
+                    <div className="browse-overlay">
+                        <div className="browse-empty-hint">{strings.VIEWS__BROWSE_EMPTY_PROMPT}</div>
                     </div>
-                    <div className="browse-empty-hint">{strings.VIEWS__BROWSE_NO_RESULTS}</div>
-                </div>
-            ) : (
-                <Editor mode="browse" filterTaskIds={filterIds} searchQuery={query} />
-            )}
+                )}
+                {tooMany && (
+                    <div className="browse-overlay">
+                        <div className="browse-empty-hint">
+                            {strings.VIEWS__BROWSE_TOO_MANY.replace("{n}", String(searchResults.length))}
+                        </div>
+                    </div>
+                )}
+                {noResults && (
+                    <div className="browse-overlay">
+                        <div className="browse-empty" onClick={createFromSearch}>
+                            <i className="fa-solid fa-plus" />
+                        </div>
+                        <div className="browse-empty-hint">{strings.VIEWS__BROWSE_NO_RESULTS}</div>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

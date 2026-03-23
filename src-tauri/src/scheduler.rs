@@ -122,6 +122,40 @@ pub struct TaskInput {
     pub name: String,
 }
 
+impl TaskInput {
+    /// Build a TaskInput, expanding [t_s, t_f] so the window always contains
+    /// at least one chunk with non-zero capacity.
+    pub fn new(
+        id: String, w: f64, t_s: usize, t_f: usize,
+        tag: String, parent_id: Option<String>, name: String,
+        start_h: usize,
+    ) -> Self {
+        let t_f = t_f.min(TOTAL_CHUNKS - 1);
+        let (t_s, t_f) = ensure_capacity(t_s, t_f, start_h);
+        Self { id, w, t_s, t_f, tag, parent_id, name }
+    }
+}
+
+/// Expand [t_s, t_f] outward until at least one chunk in the range has capacity.
+fn ensure_capacity(t_s: usize, t_f: usize, start_h: usize) -> (usize, usize) {
+    if (t_s..=t_f).any(|c| get_chunk_capacity(c, start_h) > 0.0) {
+        return (t_s, t_f);
+    }
+    let mid = (t_s + t_f) / 2;
+    let mut lo = mid;
+    let mut hi = mid;
+    loop {
+        if lo > 0 { lo -= 1; }
+        if hi < TOTAL_CHUNKS - 1 { hi += 1; }
+        if get_chunk_capacity(lo, start_h) > 0.0 || get_chunk_capacity(hi, start_h) > 0.0 {
+            return (lo, hi);
+        }
+        if lo == 0 && hi >= TOTAL_CHUNKS - 1 {
+            return (0, TOTAL_CHUNKS - 1);
+        }
+    }
+}
+
 /// Solver output for a single chunk: which tasks are allocated and how many slots each.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkAllocation {
@@ -346,8 +380,12 @@ pub fn solve(
         let h = abs_hour_pos(c, start_h) + 1; // 1–6 for Dirichlet lookup
 
         // Posterior mean: E[θ_{mk}] = ξ_{mk} / Σ_{k'} ξ_{mk'}
+        // __untagged__ gets a 10× prior so untagged tasks aren't starved for energy
         let xi_vals: Vec<f64> = tag_set.iter()
-            .map(|tag| dirichlet.get(&(dow, h, tag.clone())).copied().unwrap_or(1.0))
+            .map(|tag| {
+                let default = if tag == "__untagged__" { 10.0 } else { 1.0 };
+                dirichlet.get(&(dow, h, tag.clone())).copied().unwrap_or(default)
+            })
             .collect();
         let xi_sum: f64 = xi_vals.iter().sum();
         for k in 0..n_tags {
@@ -397,19 +435,29 @@ pub fn solve(
     // Phase 4: Build q vector (linear cost)
     // ──────────────────────────────────────────────────────────────────────
     //
-    // q[x_{ic}] = −r_i(c) = −α_{k_i} / (t_f − c + 1)
+    // q[x_{ic}] = −r_i(c)
     //
-    // Urgency reward: INVERSELY proportional to slack. Tasks due soon get
-    // high reward (small denominator). No-deadline tasks (t_f = horizon end)
-    // get near-zero reward (large denominator).
+    // Urgency reward combines two signals:
+    // 1. Deadline pressure: tasks with tight deadlines get high reward everywhere
+    //    in their window. Measured by w_i / window_size (how much of the window
+    //    the task fills). A 2-slot task with 4 chunks of window has pressure 0.5.
+    //    A no-deadline task has pressure 2/84 ≈ 0.02.
+    // 2. Earliness preference: within a task's window, earlier chunks get slightly
+    //    higher reward. This ensures the greedy packs tasks into the earliest
+    //    available slots, not the latest.
     //
-    // This inverts the original spec's r_i(c) = α·(t_f − c) which incorrectly
-    // gave the highest reward to tasks with the most slack.
+    // r_i(c) = α · (pressure_i × T + (t_f - c))
+    //
+    // The pressure term dominates for tight-deadline tasks, making them
+    // sort above no-deadline tasks. The earliness term (t_f - c) breaks ties
+    // by preferring earlier chunks within the same task.
 
     let mut q = vec![0.0; n_vars];
     for (var, &(i, c)) in x_vars.iter().enumerate() {
-        let slack = (tasks[i].t_f as f64 - c as f64).max(1.0);
-        let r_ic = params.alpha_for(&tasks[i].tag) * (TOTAL_CHUNKS as f64 / slack);
+        let window = (tasks[i].t_f as f64 - tasks[i].t_s as f64).max(1.0);
+        let pressure = tasks[i].w / window; // how tight is the deadline
+        let earliness = (tasks[i].t_f as f64 - c as f64).max(0.0); // prefer earlier
+        let r_ic = params.alpha_for(&tasks[i].tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
         q[var] = -r_ic;
     }
 
@@ -584,11 +632,11 @@ pub fn solve(
 
     let settings = osqp::Settings::default()
         .verbose(false)
-        .max_iter(4000)
-        .eps_abs(1e-3)
-        .eps_rel(1e-3)
+        .max_iter(20000)
+        .eps_abs(1e-2)
+        .eps_rel(1e-2)
         .polish(true)
-        .time_limit(Some(std::time::Duration::from_secs(5)));
+        .time_limit(Some(std::time::Duration::from_secs(30)));
 
     // Pre-flight: check total capacity vs total work
     let total_cap: f64 = cap.iter().sum();
@@ -627,9 +675,11 @@ pub fn solve(
                     // Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c}
                     let mut lambda: Vec<(usize, usize, f64)> = vec![]; // (task_idx, chunk, Λ)
                     for &(i, c) in &x_vars {
-                        let slack = (tasks[i].t_f as f64 - c as f64).max(1.0);
-                        let r_ic = params.alpha_for(&tasks[i].tag) * (TOTAL_CHUNKS as f64 / slack);
-                        let nu_i = { let row = n_c1 + n_c2 + i; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
+                        let window = (tasks[i].t_f as f64 - tasks[i].t_s as f64).max(1.0);
+                        let pressure = tasks[i].w / window;
+                        let earliness = (tasks[i].t_f as f64 - c as f64).max(0.0);
+                        let r_ic = params.alpha_for(&tasks[i].tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
+                        let nu_i = { let row = n_c1 + n_c2 + i; if row < y.len() { -y[row] } else { 0.0 } };
                         let mu_c = if c < y.len() { (-y[c]).max(0.0) } else { 0.0 };
                         let k = tag_idx.get(&tasks[i].tag).copied().unwrap_or(0);
                         let eta_kc = { let row = n_c1 + k * TOTAL_CHUNKS + c; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
@@ -664,9 +714,11 @@ pub fn solve(
                     let y = s.y();
                     let mut lambda: Vec<(usize, usize, f64)> = vec![];
                     for &(i, c) in &x_vars {
-                        let slack = (tasks[i].t_f as f64 - c as f64).max(1.0);
-                        let r_ic = params.alpha_for(&tasks[i].tag) * (TOTAL_CHUNKS as f64 / slack);
-                        let nu_i = { let row = n_c1 + n_c2 + i; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
+                        let window = (tasks[i].t_f as f64 - tasks[i].t_s as f64).max(1.0);
+                        let pressure = tasks[i].w / window;
+                        let earliness = (tasks[i].t_f as f64 - c as f64).max(0.0);
+                        let r_ic = params.alpha_for(&tasks[i].tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
+                        let nu_i = { let row = n_c1 + n_c2 + i; if row < y.len() { -y[row] } else { 0.0 } };
                         let mu_c = if c < y.len() { (-y[c]).max(0.0) } else { 0.0 };
                         let k = tag_idx.get(&tasks[i].tag).copied().unwrap_or(0);
                         let eta_kc = { let row = n_c1 + k * TOTAL_CHUNKS + c; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
@@ -719,12 +771,10 @@ fn greedy_pack_lambda(
     cap: &[f64],
     n: usize,
 ) -> (Vec<(usize, usize, f64)>, Vec<(usize, String, usize, f64)>) {
-    // Sort (task, chunk) pairs by Λ descending.
-    // Tiebreak: same task first (finish what you started), then earlier chunk.
-    let mut pairs: Vec<(usize, usize, f64)> = lambda.iter()
-        .filter(|(_, _, l)| *l > 0.0)
-        .cloned()
-        .collect();
+    // Sort ALL (task, chunk) pairs by Λ descending — don't filter out negatives.
+    // A task with Λ < 0 in some chunk is still schedulable if its preferred
+    // chunk fills up. The greedy will skip completed tasks and full chunks.
+    let mut pairs: Vec<(usize, usize, f64)> = lambda.to_vec();
     pairs.sort_by(|a, b| {
         b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
             .then(a.0.cmp(&b.0))  // same task grouped
@@ -788,9 +838,23 @@ fn greedy_pack_lambda(
         step += 1;
     }
 
-    // Any task with remaining work > 0 couldn't be scheduled within constraints
-    // (it will show as partially allocated in the output, and build_output marks
-    // tasks with 0 allocation as parked)
+    // Second pass: any task with remaining work gets placed in the first
+    // available chunk with capacity, regardless of Λ. This ensures tasks
+    // are never parked when capacity exists.
+    for i in 0..n {
+        if remaining_work[i] <= 0.01 { continue; }
+        for c in 0..TOTAL_CHUNKS {
+            if remaining_work[i] <= 0.01 { break; }
+            if remaining_cap[c] <= 0.01 { continue; }
+            let assign = remaining_work[i].min(remaining_cap[c]);
+            schedule.push((i, c, assign));
+            trace.push((step, tasks[i].name.clone(), c, assign));
+            remaining_cap[c] -= assign;
+            remaining_work[i] -= assign;
+            assigned[i] += assign;
+            step += 1;
+        }
+    }
 
     (schedule, trace)
 }
@@ -837,13 +901,15 @@ fn build_output_from_schedule(
         let total = task_allocated.get(&i).copied().unwrap_or(0.0);
         let w = debiased_w.get(&task.id).copied().unwrap_or(task.w);
         let nu_row = n_c1 + n_c2 + i;
-        let nu_i = if nu_row < y.len() { (-y[nu_row]).max(0.0) } else { 0.0 };
+        let nu_i = if nu_row < y.len() { -y[nu_row] } else { 0.0 };
 
         let mut scores: Vec<(usize, f64)> = vec![];
         for (_var, &(vi, c)) in x_vars.iter().enumerate() {
             if vi == i {
-                let slack = (task.t_f as f64 - c as f64).max(1.0);
-                let r_ic = params.alpha_for(&task.tag) * (TOTAL_CHUNKS as f64 / slack);
+                let window = (task.t_f as f64 - task.t_s as f64).max(1.0);
+                let pressure = task.w / window;
+                let earliness = (task.t_f as f64 - c as f64).max(0.0);
+                let r_ic = params.alpha_for(&task.tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
                 let mu_c = if c < y.len() { (-y[c]).max(0.0) } else { 0.0 };
                 scores.push((c, r_ic + nu_i - mu_c));
             }

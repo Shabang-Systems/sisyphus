@@ -166,13 +166,15 @@ function getSubtree(tasks, focusId) {
 
 // --- Component ---
 
-export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, onJumpHandled = null }) {
+export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, onJumpHandled = null, taskList = null }) {
     const isBrowse = mode === "browse";
     const searchQueryRef = useRef(searchQuery);
     const dispatch = useDispatch();
-    const tasks = useSelector(state => state.tasks.db);
+    const allTasks = useSelector(state => state.tasks.db);
+    const tasks = taskList || allTasks; // what's in the doc
     const loading = useSelector(state => state.tasks.loading);
     const clock = useSelector(state => state.ui.clock);
+    const tasksForStyles = allTasks; // always use full Redux store for styles/completion
 
     // Tick every 5 seconds — only updates ui.clock, doesn't touch editor/modals
     useEffect(() => {
@@ -202,12 +204,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const collapsedRootRef = useRef(null);
     const tasksRef = useRef(tasks);
     const dragState = useRef({ dragging: null, over: null });
-
     useEffect(() => { collapsedRootRef.current = collapsedRoot; }, [collapsedRoot]);
     useEffect(() => { findBarRef.current = findBar; if (findBar && findInputRef.current) findInputRef.current.focus(); }, [findBar]);
     // Find decoration refresh — moved after useEditor (see below)
     useEffect(() => { searchQueryRef.current = searchQuery; }, [searchQuery]);
-    useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+    useEffect(() => { tasksRef.current = allTasks; }, [allTasks]);
     useEffect(() => { dispatch(snapshot()); }, [dispatch]);
 
     // --- Pipeline ---
@@ -221,25 +222,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
         const needsId = rows.filter(r => !r.taskId);
         if (needsId.length > 0) {
-            // In browse mode, prefill empty new tasks with normalized search query
-            const browseQuery = isBrowse ? searchQueryRef.current : "";
-            const normalizedQuery = browseQuery ? browseQuery.replace(/[.*+?^${}()|[\]\\]/g, "") : "";
-
             let tr = editor.state.tr;
-            let needsSearchRefresh = false;
             for (const row of needsId) {
                 const id = uuid();
                 row.taskId = id;
-
-                // If empty paragraph in browse mode, insert the search text
-                const isEmpty = row.content === '{"type":"paragraph"}';
                 let content = row.content;
-                if (isEmpty && normalizedQuery) {
-                    content = JSON.stringify({ type: "paragraph", content: [{ type: "text", text: normalizedQuery }] });
-                    // Also insert text into the ProseMirror node
-                    const textNode = editor.state.schema.text(normalizedQuery);
-                    tr.insert(row.pmPos + 1, textNode);
-                }
 
                 tr.setNodeMarkup(row.pmPos, undefined, { taskId: id });
 
@@ -262,24 +249,19 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                     created_at: ts, updated_at: ts,
                 }));
                 visible.current.set(id, { content, position: row.position, created_at: ts });
-                needsSearchRefresh = true;
             }
             tr.setMeta("sync", true);
             guard.current = true;
             editor.view.dispatch(tr);
             guard.current = false;
 
-            // Re-trigger search so new tasks appear in results
-            if (isBrowse && needsSearchRefresh) {
-                // Re-trigger search immediately and after debounce settles
-                dispatch(search(searchQueryRef.current));
-                setTimeout(() => dispatch(search(searchQueryRef.current)), 400);
-            }
         }
 
         const currentIds = new Set(rows.map(r => r.taskId));
         for (const [id] of visible.current) {
-            if (!currentIds.has(id)) { dispatch(remove(id)); visible.current.delete(id); }
+            if (!currentIds.has(id)) {
+                dispatch(remove(id)); visible.current.delete(id);
+            }
         }
 
         if (updateTimer.current) clearTimeout(updateTimer.current);
@@ -287,13 +269,14 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             const fresh = readDoc(editor.state.doc);
             dedup(fresh);
             const ts2 = now();
+            const taskMap = new Map(tasksRef.current.map(t => [t.id, t]));
             for (const row of fresh) {
                 if (!row.taskId) continue;
                 const prev = visible.current.get(row.taskId);
                 if (!prev) continue;
                 if (prev.content !== row.content || prev.position !== row.position) {
                     // Preserve scheduling fields from Redux
-                    const existing = tasksRef.current.find(t => t.id === row.taskId);
+                    const existing = taskMap.get(row.taskId);
                     dispatch(upsert({
                         id: row.taskId, content: row.content, position: row.position,
                         tags: row.tags, created_at: prev.created_at, updated_at: ts2,
@@ -325,7 +308,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         const nowDate = new Date();
         const rules = [];
 
-        for (const task of tasks) {
+        for (const task of tasksForStyles) {
             const sel = `.task-block[data-task-id="${task.id}"]`;
             const effectiveDue = task.effective_due ? new Date(task.effective_due) : null;
 
@@ -381,28 +364,9 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
         style.textContent = rules.join("\n");
         return () => { style.textContent = ""; };
-    }, [tasks, clock]);
+    }, [tasksForStyles, clock]);
 
-    // --- Search filter styles ---
-
-    useEffect(() => {
-        let style = document.getElementById("sisyphus-search-style");
-        if (!style) {
-            style = document.createElement("style");
-            style.id = "sisyphus-search-style";
-            document.head.appendChild(style);
-        }
-        if (!filterTaskIds) { style.textContent = ""; return; }
-
-        // Don't hide tasks with empty data-task-id (brand new, not yet stamped)
-        const hiddenIds = tasks.map(t => t.id).filter(id => id && !filterTaskIds.has(id));
-        if (!hiddenIds.length) { style.textContent = ""; return; }
-
-        const selectors = hiddenIds.map(id => `.task-block[data-task-id="${id}"]`).join(",\n");
-        // Also hide empty-id blocks that aren't new (shouldn't exist, but safety)
-        style.textContent = `${selectors} { display: none !important; }`;
-        return () => { style.textContent = ""; };
-    }, [filterTaskIds, tasks]);
+    // Search filter styles removed — browse mode passes filtered taskList directly.
 
     // --- Collapse styles ---
 
@@ -501,7 +465,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
             try {
                 const resolved = editor.state.doc.resolve(from);
-                if (!isBrowse && resolved.index(0) === editor.state.doc.childCount - 1) {
+                if (!isBrowse && !isLoadingMore.current && resolved.index(0) === editor.state.doc.childCount - 1) {
                     const coords = editor.view.coordsAtPos(from);
                     const container = document.querySelector(".editor-content");
                     if (coords && container) {
@@ -682,17 +646,25 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         };
     }, [editor, runPipeline]);
 
-    // --- Hydrate ---
+    // --- Hydrate (foveated: load most recent PAGE_SIZE tasks, load older on scroll-to-top) ---
 
-    useEffect(() => {
-        if (loading || !editor || hydrated.current) return;
-        hydrated.current = true;
-        if (tasks.length === 0) return;
+    const PAGE_SIZE = 50;
+    const allTasksRef = useRef([]); // sorted by created_at ascending (oldest first)
+    const loadedCountRef = useRef(0);
+    const isLoadingMore = useRef(false); // prevent autoscroll during load-more
 
-        const sorted = [...tasks].sort((a, b) => a.position - b.position);
+    const loadTasks = useCallback((taskArray) => {
+        if (!editor) return;
+        const sorted = [...taskArray].sort((a, b) => a.position - b.position);
+        allTasksRef.current = sorted;
+
+        const startIdx = isBrowse ? 0 : Math.max(0, sorted.length - PAGE_SIZE);
+        const initialSlice = sorted.slice(startIdx);
+        loadedCountRef.current = initialSlice.length;
+
         const map = new Map();
-        const content = sorted.map((t, i) => {
-            map.set(t.id, { content: t.content, position: i, created_at: t.created_at });
+        const content = initialSlice.map((t, i) => {
+            map.set(t.id, { content: t.content, position: startIdx + i, created_at: t.created_at });
             try {
                 const p = JSON.parse(t.content);
                 return { ...p, attrs: { ...(p.attrs || {}), taskId: t.id } };
@@ -703,9 +675,84 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
         visible.current = map;
         suppress.current = true;
-        editor.commands.setContent({ type: "doc", content });
-        setTimeout(() => { suppress.current = false; editor.commands.focus("end"); }, 0);
+        editor.commands.setContent({ type: "doc", content: content.length ? content : [{ type: "paragraph" }] });
+        setTimeout(() => {
+            suppress.current = false;
+            if (!isBrowse) editor.commands.focus("end");
+        }, 0);
+    }, [editor, isBrowse]);
+
+    // Initial hydration (planning mode)
+    useEffect(() => {
+        if (loading || !editor || hydrated.current || isBrowse) return;
+        hydrated.current = true;
+        if (tasks.length === 0) return;
+        loadTasks(tasks);
     }, [loading, editor]);
+
+    // Browse mode: reload when taskList changes
+    useEffect(() => {
+        if (!isBrowse || !editor || loading) return;
+        hydrated.current = true;
+        loadTasks(taskList || []);
+    }, [taskList, editor]);
+
+    // Load more tasks when user scrolls to the top (planning mode only)
+    useEffect(() => {
+        if (!editor || isBrowse) return;
+        const container = document.querySelector(".editor-content");
+        if (!container) return;
+
+        const onScroll = () => {
+            if (container.scrollTop > 50) return; // not at top
+            const allTasks = allTasksRef.current;
+            const loaded = loadedCountRef.current;
+            if (loaded >= allTasks.length) return; // all loaded
+
+            // Load next PAGE_SIZE batch (prepend to editor)
+            const endIdx = allTasks.length - loaded;
+            const startIdx = Math.max(0, endIdx - PAGE_SIZE);
+            const batch = allTasks.slice(startIdx, endIdx);
+            if (batch.length === 0) return;
+
+            loadedCountRef.current += batch.length;
+            isLoadingMore.current = true;
+
+            // Save scroll position to restore after prepending
+            const scrollHeight = container.scrollHeight;
+
+            const newContent = batch.map(t => {
+                visible.current.set(t.id, { content: t.content, position: 0, created_at: t.created_at });
+                try {
+                    const p = JSON.parse(t.content);
+                    return { ...p, attrs: { ...(p.attrs || {}), taskId: t.id } };
+                } catch {
+                    return { type: "paragraph", attrs: { taskId: t.id }, content: [{ type: "text", text: t.content }] };
+                }
+            });
+
+            // Prepend: insert at position 0 in the ProseMirror doc
+            suppress.current = true;
+            const nodes = newContent.map(c => editor.state.schema.nodeFromJSON(c));
+            const fragment = Fragment.from(nodes);
+            const tr = editor.state.tr.insert(0, fragment);
+            tr.setMeta("sync", true);
+            guard.current = true;
+            editor.view.dispatch(tr);
+            guard.current = false;
+
+            // Restore scroll position so it doesn't jump
+            requestAnimationFrame(() => {
+                const newScrollHeight = container.scrollHeight;
+                container.scrollTop = newScrollHeight - scrollHeight;
+                suppress.current = false;
+                isLoadingMore.current = false;
+            });
+        };
+
+        container.addEventListener("scroll", onScroll, { passive: true });
+        return () => container.removeEventListener("scroll", onScroll);
+    }, [editor]);
 
     // --- Modal callbacks ---
 
@@ -737,14 +784,25 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         if (!task) return;
         const ts = now();
 
+        // Optimistic: apply visual state immediately via inline style injection
+        const sel = `.task-block[data-task-id="${taskId}"]`;
+        const optStyle = document.getElementById("sisyphus-optimistic-style") || (() => {
+            const s = document.createElement("style"); s.id = "sisyphus-optimistic-style";
+            document.head.appendChild(s); return s;
+        })();
+
         if (task.completed_at) {
-            // Uncomplete
-            dispatch(upsert({ ...task, completed_at: null, updated_at: ts }));
+            // Uncomplete — remove strikethrough immediately
+            optStyle.textContent = `${sel} .task-row p { text-decoration: none !important; opacity: 1 !important; } ${sel} .task-check { color: inherit !important; }`;
+            dispatch(upsert({ ...task, completed_at: null, updated_at: ts }))
+                .then(() => { optStyle.textContent = ""; });
             return;
         }
 
-        // Complete
-        dispatch(upsert({ ...task, completed_at: ts, updated_at: ts }));
+        // Complete — apply strikethrough immediately
+        optStyle.textContent = `${sel} .task-row p { text-decoration: line-through !important; opacity: 0.4 !important; } ${sel} .task-check { color: var(--green) !important; }`;
+        dispatch(upsert({ ...task, completed_at: ts, updated_at: ts }))
+            .then(() => { optStyle.textContent = ""; });
 
         // If rrule, create next occurrence via pipeline
         if (task.rrule && editor) {
@@ -820,6 +878,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         }
 
         function onKeyDown(e) {
+            // Block Enter in browse mode — no new task creation
+            if (isBrowse && e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+                e.preventDefault(); e.stopPropagation();
+                return;
+            }
             if (matchShortcut(e, shortcuts.FIND)) {
                 e.preventDefault(); e.stopPropagation();
                 setFindBar(prev => !prev);

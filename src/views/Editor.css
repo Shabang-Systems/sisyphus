@@ -181,6 +181,8 @@
     border-radius: 4px;
     transition: background 0.1s ease;
     position: relative;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 .task-row:hover p {

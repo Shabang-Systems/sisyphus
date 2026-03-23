@@ -4,6 +4,7 @@
     height: 100%;
     width: 100%;
     position: relative;
+    overflow: hidden;
 }
 
 .browse .drag-region {
@@ -92,12 +93,31 @@
 }
 
 .browse-sheet-dot.active {
-    background: var(--fg) !important;
+    background: var(--gray-3) !important;
 }
 
 .browse-sheet-dot:hover {
     background: var(--gray-3);
 }
+
+/* Editor container — always mounted, overlays on top */
+.browse-editor-container {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.browse-overlay {
+    position: absolute;
+    inset: 0;
+    background: var(--bg);
+    z-index: 10;
+    padding-top: 8px;
+}
+
+/* Hide dividers in browse mode — no task creation via midpoint click */
+.editor-browse .task-divider { display: none !important; }
 
 /* Empty state */
 .browse-empty {

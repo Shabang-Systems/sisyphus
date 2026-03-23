@@ -29,7 +29,7 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
                 data-tooltip-id="rootp"
                 data-tooltip-content={strings.TOOLTIPS.PLANNING}
             >
-                <i className="fa-solid fa-person"></i>
+                <i className="fa-solid fa-child-reaching"></i>
             </div>
             <div
                 className={"bottom-nav-button" + (activeView === "browse" ? " active" : "")}
@@ -37,7 +37,7 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
                 data-tooltip-id="rootp"
                 data-tooltip-content={strings.TOOLTIPS.BROWSE}
             >
-                <i className="fa-solid fa-person-chalkboard"></i>
+                <i className="fa-solid fa-person-hiking"></i>
             </div>
             <div
                 className={"bottom-nav-button" + (activeView === "debug" ? " active" : "")}
@@ -45,7 +45,7 @@ function Sidebar({ activeView, onViewChange, onLogout }) {
                 data-tooltip-id="rootp"
                 data-tooltip-content={strings.TOOLTIPS.DEBUG}
             >
-                <i className="fa-solid fa-bug"></i>
+                <i className="fa-solid fa-user-ninja"></i>
             </div>
             <div
                 className="bottom-nav-button"

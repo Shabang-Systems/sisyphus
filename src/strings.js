@@ -31,6 +31,8 @@ export default {
     VIEWS__DEBUG_PARKED: "Parked Tasks",
     VIEWS__DEBUG_PARKED_HINT: "These tasks are optimally deferred — every chunk of time is better spent elsewhere.",
     VIEWS__BROWSE_PLACEHOLDER: "search tasks...",
+    VIEWS__BROWSE_EMPTY_PROMPT: "what would you like to find?",
+    VIEWS__BROWSE_TOO_MANY: "{n} results — try being more specific.",
     VIEWS__BROWSE_NO_RESULTS: "no matches found, add one?",
     TOOLTIPS: {
         PLANNING: "Planning",
