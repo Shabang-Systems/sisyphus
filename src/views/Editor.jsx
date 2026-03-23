@@ -1163,7 +1163,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 const task = tasksRef.current.find(t => t.id === taskId);
                 if (task) {
                     if (task.locked) {
-                        dispatch(upsert({ ...task, locked: false, schedule: null, updated_at: now() }));
+                        dispatch(upsert({ ...task, locked: false, updated_at: now() }));
                     } else if (task.schedule) {
                         dispatch(upsert({ ...task, locked: true, updated_at: now() }));
                     } else {

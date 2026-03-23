@@ -205,27 +205,66 @@ export default function Action({ onJumpToTask }) {
                 </div>
             )}
 
-            {dragState && (
-                <div className="action-drop-overlay">
-                    {[...Array(14)].map((_, dayIdx) => (
-                        <div key={dayIdx} className="action-drop-day">
-                            <div className="action-drop-day-label">{dayLabel(dayIdx)}</div>
-                            <div className="action-drop-grid">
-                                {CHUNK_LABELS.map((label, chunkIdx) => (
-                                    <div
-                                        key={chunkIdx}
-                                        className={`action-drop-cell${dropTarget?.day === dayIdx && dropTarget?.chunkIdx === chunkIdx ? " active" : ""}`}
-                                        onMouseEnter={() => handleDropEnter(dayIdx, chunkIdx)}
-                                        onMouseLeave={handleDropLeave}
-                                    >
-                                        {label}
-                                    </div>
-                                ))}
-                            </div>
+            {dragState && (() => {
+                // Compute load per cell and find current task's schedule
+                const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+                const loadMap = new Map();
+                let maxLoad = 1;
+                let currentDay = -1, currentChunk = -1;
+
+                for (const t of allTasks) {
+                    if (!t.schedule || t.completed_at) continue;
+                    const sd = new Date(t.schedule);
+                    const dd = Math.floor((sd - todayStart) / 86400000);
+                    if (dd < 0 || dd >= 14) continue;
+                    const ci = Math.floor(sd.getHours() / 4);
+                    const key = `${dd}:${ci}`;
+                    const effort = t.effort || 2;
+                    loadMap.set(key, (loadMap.get(key) || 0) + effort);
+                    if (t.id === dragState.taskId) { currentDay = dd; currentChunk = ci; }
+                }
+                for (const v of loadMap.values()) { if (v > maxLoad) maxLoad = v; }
+
+                return (
+                    <div className="action-drop-overlay" onMouseMove={(e) => {
+                        if (!e.target.classList.contains("action-drop-cell")) {
+                            dropTargetRef.current = null;
+                            setDropTarget(null);
+                        }
+                    }}>
+                        <div className="action-drop-header">
+                            <div />
+                            {CHUNK_LABELS.map((label, i) => (
+                                <div key={i} className="action-drop-col-label">{label}</div>
+                            ))}
                         </div>
-                    ))}
-                </div>
-            )}
+                        {[...Array(14)].map((_, dayIdx) => (
+                            <div key={dayIdx} className="action-drop-row">
+                                <div className={`action-drop-row-label${dayIdx === 0 ? " today" : ""}`}>{dayLabel(dayIdx)}</div>
+                                {CHUNK_LABELS.map((_, chunkIdx) => {
+                                    const isCurrent = dayIdx === currentDay && chunkIdx === currentChunk;
+                                    const isActive = dropTarget?.day === dayIdx && dropTarget?.chunkIdx === chunkIdx;
+                                    const load = loadMap.get(`${dayIdx}:${chunkIdx}`) || 0;
+                                    const intensity = Math.min(load / maxLoad, 1);
+                                    const bg = isActive ? undefined
+                                        : isCurrent ? "rgba(55, 165, 190, 0.15)"
+                                        : load > 0 ? `rgba(242, 114, 0, ${0.06 + intensity * 0.18})`
+                                        : undefined;
+                                    return (
+                                        <div
+                                            key={chunkIdx}
+                                            className={`action-drop-cell${isActive ? " active" : ""}${isCurrent ? " current" : ""}`}
+                                            style={bg ? { background: bg } : undefined}
+                                            onMouseEnter={() => handleDropEnter(dayIdx, chunkIdx)}
+                                            onMouseLeave={handleDropLeave}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        ))}
+                    </div>
+                );
+            })()}
         </div>
     );
 }
