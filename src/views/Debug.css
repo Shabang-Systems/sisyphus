@@ -62,3 +62,43 @@
 
 /* Raw JSON */
 .debug-raw { font-size: 10px; font-family: monospace; color: var(--gray-3); background: var(--gray-1); padding: 8px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
+
+/* Formula explanation */
+.debug-explain { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.debug-explain-row { display: flex; gap: 12px; align-items: baseline; padding: 3px 0; }
+.debug-explain-formula { font-family: "SF Mono", monospace; font-size: 12px; color: var(--fg); font-weight: 500; min-width: 200px; flex-shrink: 0; }
+.debug-explain-desc { font-size: 11px; color: var(--gray-3); line-height: 1.4; }
+.debug-explain-desc strong { color: var(--fg); }
+.debug-explain-stats { display: flex; gap: 20px; font-size: 11px; color: var(--gray-3); padding: 6px 0; border-top: 1px solid var(--gray-1); }
+.debug-explain-stats strong { color: var(--fg); }
+
+/* Per-task formula cards */
+.debug-formula-card { margin-bottom: 8px; padding: 8px 10px; border: 1px solid var(--gray-1); border-radius: 6px; }
+.debug-formula-card.parked { border-left: 3px solid var(--gray-3); opacity: 0.6; }
+.debug-formula-card.garbage { border-left: 3px solid var(--red); }
+.debug-formula-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.debug-formula-name { font-size: 12px; font-weight: 500; color: var(--fg); }
+.debug-formula-tag { font-size: 10px; color: var(--blue); }
+.debug-badge.garbage { background: #fff0f0; color: var(--red); }
+.debug-formula-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 12px; margin-bottom: 6px; }
+.debug-formula-item { display: flex; flex-direction: column; }
+.debug-formula-label { font-size: 9px; color: var(--gray-3); text-transform: uppercase; letter-spacing: 0.3px; }
+.debug-formula-value { font-size: 11px; font-family: monospace; color: var(--fg); }
+.debug-formula-value.red { color: var(--red); }
+.debug-formula-best { font-size: 10px; font-family: monospace; color: var(--gray-3); padding-top: 4px; border-top: 1px solid var(--gray-1); }
+.debug-formula-best strong { color: var(--fg); }
+
+/* Full dump */
+.debug-dump {
+    font-size: 11px;
+    font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--gray-1);
+    border-radius: 6px;
+    padding: 16px;
+    white-space: pre;
+    overflow: auto;
+    line-height: 1.5;
+    tab-size: 2;
+}

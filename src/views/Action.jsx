@@ -154,6 +154,14 @@ export default function Action({ onJumpToTask }) {
         return ordered;
     }, [allTasks]);
 
+    // Parked tasks: no schedule, not completed, not deferred, has content
+    const parkedTasks = useMemo(() => {
+        const textRe = /"text"\s*:\s*"[^"]+"/;
+        return allTasks.filter(t =>
+            !t.schedule && !t.completed_at && !t.is_deferred && textRe.test(t.content)
+        );
+    }, [allTasks]);
+
     return (
         <div className="action">
             <div className="action-main">
@@ -164,6 +172,22 @@ export default function Action({ onJumpToTask }) {
 
                 {loading && groups.length === 0 && (
                     <div className="action-loading">computing schedule...</div>
+                )}
+
+                {parkedTasks.length > 0 && (
+                    <div className="action-parked">
+                        <div className="action-parked-header">
+                            <span className="action-parked-label">unable to schedule</span>
+                        </div>
+                        <div className="action-parked-editor">
+                            <Editor
+                                mode="browse"
+                                taskList={parkedTasks}
+                                onTaskDrag={handleTaskDrag}
+                                onJumpToTask={onJumpToTask}
+                            />
+                        </div>
+                    </div>
                 )}
 
                 <div className="action-timeline">

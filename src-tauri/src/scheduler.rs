@@ -180,14 +180,21 @@ pub struct TaskScheduleInfo {
     pub w: f64,
     /// Tag class.
     pub tag: String,
+    /// Feasibility window [t_s, t_f].
+    pub t_s: usize,
+    pub t_f: usize,
+    /// α_k for this task's tag.
+    pub alpha: f64,
+    /// Deadline pressure = w / window_size.
+    pub pressure: f64,
     /// Completion pressure dual variable ν_i. Positive when the task barely fits
     /// in its feasibility window. Zero when there is ample slack.
     pub completion_pressure: f64,
     /// Total slots allocated across all chunks.
     pub total_allocated: f64,
-    /// Priority scores Λ_{ic} per chunk. High = high value of working on this task
-    /// at this time.
-    pub priority_scores: Vec<(usize, f64)>,
+    /// Priority scores Λ_{ic} per chunk with formula breakdown.
+    /// (chunk, Λ, r_ic, ν_i, μ_c, η_kc)
+    pub priority_scores: Vec<(usize, f64, f64, f64, f64, f64)>,
 }
 
 /// Dual variable diagnostics for the debug view.
@@ -708,7 +715,10 @@ pub fn solve(
                         let w = debiased_w.get(&task.id).copied().unwrap_or(task.w);
                         output.task_info.push(TaskScheduleInfo {
                             id: task.id.clone(), name: task.name.clone(), w,
-                            tag: task.tag.clone(), completion_pressure: 0.0,
+                            tag: task.tag.clone(), t_s: task.t_s, t_f: task.t_f,
+                            alpha: params.alpha_for(&task.tag),
+                            pressure: task.w / (task.t_f as f64 - task.t_s as f64).max(1.0),
+                            completion_pressure: 0.0,
                             total_allocated: 0.0, priority_scores: vec![],
                         });
                         output.parked.push(task.id.clone());
@@ -902,21 +912,29 @@ fn build_output_from_schedule(
         *task_allocated.entry(task_idx).or_default() += slots;
     }
 
+    let tag_idx_map: HashMap<String, usize> = tag_set.iter().enumerate()
+        .map(|(i, t)| (t.clone(), i)).collect();
+
     for (i, task) in tasks.iter().enumerate() {
         let total = task_allocated.get(&i).copied().unwrap_or(0.0);
         let w = debiased_w.get(&task.id).copied().unwrap_or(task.w);
         let nu_row = n_c1 + n_c2 + i;
         let nu_i = if nu_row < y.len() { -y[nu_row] } else { 0.0 };
+        let window = (task.t_f as f64 - task.t_s as f64).max(1.0);
+        let pressure = task.w / window;
+        let alpha = params.alpha_for(&task.tag);
 
-        let mut scores: Vec<(usize, f64)> = vec![];
+        // (chunk, Λ, r_ic, ν_i, μ_c, η_kc)
+        let mut scores: Vec<(usize, f64, f64, f64, f64, f64)> = vec![];
         for (_var, &(vi, c)) in x_vars.iter().enumerate() {
             if vi == i {
-                let window = (task.t_f as f64 - task.t_s as f64).max(1.0);
-                let pressure = task.w / window;
                 let earliness = (task.t_f as f64 - c as f64).max(0.0);
-                let r_ic = params.alpha_for(&task.tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
+                let r_ic = alpha * (pressure * TOTAL_CHUNKS as f64 + earliness);
                 let mu_c = if c < y.len() { (-y[c]).max(0.0) } else { 0.0 };
-                scores.push((c, r_ic + nu_i - mu_c));
+                let k = tag_idx_map.get(&task.tag).copied().unwrap_or(0);
+                let eta_kc = { let row = n_c1 + k * TOTAL_CHUNKS + c; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
+                let l = r_ic + nu_i - mu_c - eta_kc;
+                scores.push((c, l, r_ic, nu_i, mu_c, eta_kc));
             }
         }
 
@@ -929,9 +947,13 @@ fn build_output_from_schedule(
             name: task.name.clone(),
             w,
             tag: task.tag.clone(),
+            t_s: task.t_s,
+            t_f: task.t_f,
+            alpha,
+            pressure,
             completion_pressure: nu_i,
             total_allocated: total,
-            priority_scores: scores.into_iter().filter(|(_, s)| *s > 0.01).collect(),
+            priority_scores: scores,
         });
     }
 

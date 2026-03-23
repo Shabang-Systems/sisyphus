@@ -165,6 +165,107 @@
     margin-left: 65px;
 }
 
+/* Parked / unable to schedule section */
+.action-parked {
+    margin-left: 65px;
+    margin-bottom: 16px;
+}
+
+.action-parked-header {
+    padding-bottom: 6px;
+}
+
+.action-parked-label {
+    font-size: 11px;
+    color: var(--red);
+    font-weight: 500;
+}
+
+.action-parked-editor {
+    opacity: 0.7;
+}
+
+/* Mirror all action-editor-wrap overrides for parked section */
+.action-parked-editor .editor {
+    padding: 0 !important;
+    margin: 0 !important;
+    height: auto !important;
+}
+
+.action-parked-editor .drag-region {
+    display: none !important;
+}
+
+.action-parked-editor .editor-content {
+    padding: 0 !important;
+    margin: 0 !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    cursor: default;
+}
+
+.action-parked-editor .ProseMirror {
+    padding: 0 !important;
+    min-height: auto !important;
+}
+
+.action-parked-editor .tiptap > *:first-child {
+    margin-top: 0 !important;
+}
+
+.action-parked-editor .task-row {
+    margin: 0;
+    margin-left: -44px;
+}
+
+.action-parked-editor .task-row p {
+    padding-left: 8px;
+}
+
+.action-parked-editor .task-block {
+    margin: 0;
+}
+
+.action-parked-editor .task-check,
+.action-parked-editor .task-drag-handle {
+    background: var(--bg);
+    padding: 3px 0;
+}
+
+.action-parked-editor .task-drag-handle {
+    position: relative;
+}
+
+.action-parked-editor .task-drag-handle::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 100%;
+    width: 60px;
+    background: var(--bg);
+}
+
+.action-parked-editor .task-block:hover .task-check,
+.action-parked-editor .task-block:hover .task-drag-handle {
+    opacity: 1;
+}
+
+.action-parked-editor .task-block:hover .task-toolbar {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.action-parked-editor .task-divider {
+    left: 0;
+}
+
+.action-parked-editor .focus-exit-btn,
+.action-parked-editor .task-collapse-btn {
+    display: none !important;
+}
+
 .action-spacer {
     height: 60vh;
 }

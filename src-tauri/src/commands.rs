@@ -204,6 +204,16 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
                 .or_insert(sched_date.clone());
         }
     }
+    // Park tasks with garbage duals (ν > 1e10 = solver didn't converge)
+    let mut all_parked: Vec<String> = output.parked.clone();
+    for info in &output.task_info {
+        if info.completion_pressure > 1e10 && !all_parked.contains(&info.id) {
+            all_parked.push(info.id.clone());
+            earliest.remove(&info.id);
+        }
+    }
+
+    // Write schedule for properly solved tasks
     for (tid, sched_date) in &earliest {
         let _ = sqlx::query(
             "UPDATE tasks SET schedule = ?, updated_at = datetime('now') WHERE id = ? AND (locked = 0 OR locked IS NULL)"
@@ -214,8 +224,8 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
         .await;
     }
 
-    // Clear schedule for parked (unallocated, non-locked) tasks
-    for tid in &output.parked {
+    // Clear schedule for parked tasks
+    for tid in &all_parked {
         let _ = sqlx::query(
             "UPDATE tasks SET schedule = NULL, updated_at = datetime('now') WHERE id = ? AND (locked = 0 OR locked IS NULL)"
         )

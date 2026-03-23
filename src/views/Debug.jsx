@@ -80,6 +80,111 @@ export default function Debug() {
                 {loading && !schedule && <div className="debug-loading">{strings.VIEWS__DEBUG_LOADING}</div>}
 
                 {schedule && <>
+                    {/* ── Formula Explanation ── */}
+                    <section className="debug-section">
+                        <h3>Scheduling Model</h3>
+                        <div className="debug-explain">
+                            <div className="debug-explain-row">
+                                <div className="debug-explain-formula">Λ<sub>ic</sub> = r<sub>i</sub>(c) + ν<sub>i</sub> − μ<sub>c</sub> − η<sub>kc</sub></div>
+                                <div className="debug-explain-desc">Priority score for task <em>i</em> at chunk <em>c</em>. Higher = more valuable to schedule here.</div>
+                            </div>
+                            <div className="debug-explain-row">
+                                <div className="debug-explain-formula">r<sub>i</sub>(c) = α<sub>k</sub> × (pressure × T + earliness)</div>
+                                <div className="debug-explain-desc">
+                                    Delay reward. <strong>pressure</strong> = w/window (tight deadline → high).
+                                    <strong>earliness</strong> = t<sub>f</sub> − c (prefer earlier chunks).
+                                    <strong>α<sub>k</sub></strong> = tag urgency weight.
+                                    <strong>T</strong> = {schedule.horizon_days * schedule.chunks_per_day} total chunks.
+                                </div>
+                            </div>
+                            <div className="debug-explain-row">
+                                <div className="debug-explain-formula">ν<sub>i</sub></div>
+                                <div className="debug-explain-desc">Completion pressure (KKT dual). Positive when task barely fits its window. Huge (&gt;10<sup>10</sup>) = solver didn't converge → task is parked.</div>
+                            </div>
+                            <div className="debug-explain-row">
+                                <div className="debug-explain-formula">μ<sub>c</sub></div>
+                                <div className="debug-explain-desc">Time price at chunk <em>c</em>. High when chunk is contested (many tasks want it).</div>
+                            </div>
+                            <div className="debug-explain-row">
+                                <div className="debug-explain-formula">η<sub>kc</sub></div>
+                                <div className="debug-explain-desc">Energy price for tag class <em>k</em> at chunk <em>c</em>. High when tag's Dirichlet budget is exhausted.</div>
+                            </div>
+                            <div className="debug-explain-row">
+                                <div className="debug-explain-formula">Greedy packing</div>
+                                <div className="debug-explain-desc">Sort all (task, chunk) pairs by Λ descending. Greedily assign slots until each task's work requirement is met or capacity runs out. Tasks with Λ ≤ 0 everywhere are parked.</div>
+                            </div>
+                        </div>
+                        <div className="debug-explain-stats">
+                            <span>Horizon: <strong>{schedule.horizon_days}d × {schedule.chunks_per_day} chunks = {schedule.horizon_days * schedule.chunks_per_day} total</strong></span>
+                            <span>Tasks: <strong>{schedule.task_info.length}</strong> ({schedule.task_info.filter(t => t.total_allocated > 0).length} scheduled, {schedule.parked.length} parked)</span>
+                            <span>Allocations: <strong>{schedule.allocations.length}</strong> chunks used</span>
+                        </div>
+                    </section>
+
+                    {/* ── Per-Task Formula Values ── */}
+                    <section className="debug-section">
+                        <h3>Per-Task Formula Values</h3>
+                        {[...schedule.task_info]
+                            .sort((a, b) => b.total_allocated - a.total_allocated || a.name.localeCompare(b.name))
+                            .map(t => {
+                                const isParked = schedule.parked.includes(t.id);
+                                const garbageDual = t.completion_pressure > 1e10;
+                                const maxLambda = t.priority_scores.length > 0
+                                    ? Math.max(...t.priority_scores.map(s => s[1]))
+                                    : 0;
+                                const bestChunk = t.priority_scores.length > 0
+                                    ? t.priority_scores.reduce((best, s) => s[1] > best[1] ? s : best)
+                                    : null;
+
+                                return (
+                                    <div key={t.id} className={`debug-formula-card${isParked ? " parked" : ""}${garbageDual ? " garbage" : ""}`}>
+                                        <div className="debug-formula-header">
+                                            <span className="debug-formula-name">{t.name}</span>
+                                            <span className="debug-formula-tag">{t.tag}</span>
+                                            {isParked && <span className="debug-badge parked">PARKED</span>}
+                                            {garbageDual && <span className="debug-badge garbage">UNCONVERGED</span>}
+                                        </div>
+                                        <div className="debug-formula-grid">
+                                            <div className="debug-formula-item">
+                                                <span className="debug-formula-label">w</span>
+                                                <span className="debug-formula-value">{t.w} slots ({(t.w * 0.5).toFixed(1)}h)</span>
+                                            </div>
+                                            <div className="debug-formula-item">
+                                                <span className="debug-formula-label">window</span>
+                                                <span className="debug-formula-value">[{t.t_s}, {t.t_f}] ({t.t_f - t.t_s + 1} chunks)</span>
+                                            </div>
+                                            <div className="debug-formula-item">
+                                                <span className="debug-formula-label">α<sub>k</sub></span>
+                                                <span className="debug-formula-value">{(t.alpha || 1).toFixed(2)}</span>
+                                            </div>
+                                            <div className="debug-formula-item">
+                                                <span className="debug-formula-label">pressure</span>
+                                                <span className="debug-formula-value">{(t.pressure || 0).toFixed(4)}</span>
+                                            </div>
+                                            <div className="debug-formula-item">
+                                                <span className="debug-formula-label">ν<sub>i</sub></span>
+                                                <span className={`debug-formula-value${garbageDual ? " red" : ""}`}>{t.completion_pressure.toFixed(3)}</span>
+                                            </div>
+                                            <div className="debug-formula-item">
+                                                <span className="debug-formula-label">allocated</span>
+                                                <span className="debug-formula-value">{t.total_allocated.toFixed(1)} / {t.w} slots</span>
+                                            </div>
+                                            <div className="debug-formula-item">
+                                                <span className="debug-formula-label">max Λ</span>
+                                                <span className="debug-formula-value">{maxLambda.toFixed(3)}{bestChunk ? ` @ c${bestChunk[0]}` : ""}</span>
+                                            </div>
+                                        </div>
+                                        {bestChunk && (
+                                            <div className="debug-formula-best">
+                                                Best chunk: Λ = {bestChunk[2].toFixed(1)} (r) + {bestChunk[3].toFixed(1)} (ν) − {bestChunk[4].toFixed(1)} (μ) − {bestChunk[5].toFixed(1)} (η) = <strong>{bestChunk[1].toFixed(3)}</strong>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })
+                        }
+                    </section>
+
                     {/* ── Allocations (flat list) ── */}
                     <section className="debug-section">
                         <h3>{strings.VIEWS__DEBUG_SCHEDULE}</h3>
@@ -206,10 +311,165 @@ export default function Debug() {
                         </section>
                     )}
 
-                    {/* ── Raw JSON ── */}
+                    {/* ── Full Dump ── */}
                     <section className="debug-section">
-                        <h3>Raw Output</h3>
-                        <pre className="debug-raw">{JSON.stringify(schedule, null, 2)}</pre>
+                        <h3>Full Dump</h3>
+                        <pre className="debug-dump">{(() => {
+                            const s = schedule;
+                            const lines = [];
+                            const pad = (str, w) => str.slice(0, w).padEnd(w);
+                            const rpad = (str, w) => str.slice(0, w).padStart(w);
+
+                            // Errors
+                            if (s.errors.length > 0) {
+                                lines.push("══════════════════════════════════════════════════════════════");
+                                lines.push("  ERRORS / WARNINGS");
+                                lines.push("══════════════════════════════════════════════════════════════");
+                                s.errors.forEach(e => lines.push(`  ⚠ ${e}`));
+                                lines.push("");
+                            }
+
+                            // Schedule grid
+                            lines.push("══════════════════════════════════════════════════════════════");
+                            lines.push("  SCHEDULE GRID");
+                            lines.push("══════════════════════════════════════════════════════════════");
+                            if (s.allocations.length === 0) {
+                                lines.push("  (no allocations)");
+                            } else {
+                                for (const a of s.allocations) {
+                                    lines.push("");
+                                    lines.push(`  ┌─ ${allocLabel(a.day, a.hour_start, horizonStart)} ─────────────`);
+                                    for (const [tid, slots] of a.tasks) {
+                                        const info = s.task_info.find(t => t.id === tid);
+                                        const name = pad(info?.name || tid.slice(0, 8), 40);
+                                        const tag = pad(info?.tag || "", 15);
+                                        lines.push(`  │  ${name} ${tag} ${fmtSlots(slots)}`);
+                                    }
+                                    lines.push("  └────────────────────────────────────────────────────────");
+                                }
+                            }
+                            lines.push("");
+
+                            // Task diagnostics — full formula breakdown
+                            lines.push("══════════════════════════════════════════════════════════════════════════════════");
+                            lines.push("  TASK DIAGNOSTICS");
+                            lines.push("  Formula: Λ_{ic} = r_i(c) + ν_i − μ_c − η_{kc}");
+                            lines.push("  where   r_i(c) = α_k × (pressure × T + earliness)");
+                            lines.push("          pressure = w / window,  earliness = t_f − c");
+                            lines.push("══════════════════════════════════════════════════════════════════════════════════");
+
+                            // Sort: allocated desc, then by name
+                            const sortedTasks = [...s.task_info].sort((a, b) =>
+                                b.total_allocated - a.total_allocated || a.name.localeCompare(b.name));
+
+                            for (const t of sortedTasks) {
+                                const isParked = s.parked.includes(t.id);
+                                const garbageDual = t.completion_pressure > 1e10;
+                                const flags = [
+                                    isParked ? "PARKED" : null,
+                                    garbageDual ? "GARBAGE DUAL" : null,
+                                    t.total_allocated > 0 ? `${t.total_allocated.toFixed(1)} slots allocated` : "0 allocated",
+                                ].filter(Boolean).join(" | ");
+
+                                lines.push("");
+                                lines.push(`  ┌─ ${t.name} ──────────────────────────────────────────`);
+                                lines.push(`  │  tag: ${t.tag}    [${flags}]`);
+                                lines.push(`  │`);
+                                lines.push(`  │  w = ${t.w} slots (${(t.w * 0.5).toFixed(1)}h)    window = [${t.t_s}, ${t.t_f}]    α = ${(t.alpha || 1).toFixed(2)}`);
+                                lines.push(`  │  pressure = w/window = ${(t.pressure || 0).toFixed(4)}`);
+                                lines.push(`  │  ν_i (completion pressure) = ${t.completion_pressure.toFixed(3)}${garbageDual ? "  ← UNCONVERGED" : ""}`);
+                                lines.push(`  │`);
+
+                                if (t.priority_scores.length > 0) {
+                                    lines.push(`  │  Λ breakdown per chunk:`);
+                                    lines.push(`  │  ${pad("chunk", 22)} ${rpad("r_i(c)", 10)} ${rpad("ν_i", 12)} ${rpad("μ_c", 10)} ${rpad("η_kc", 10)} ${rpad("Λ", 10)}`);
+                                    lines.push(`  │  ${"─".repeat(76)}`);
+                                    for (const score of t.priority_scores) {
+                                        const [c, lambda, r, nu, mu, eta] = score;
+                                        lines.push(`  │  ${pad(chunkLabel(c, horizonStart), 22)} ${rpad(r.toFixed(3), 10)} ${rpad(nu.toFixed(3), 12)} ${rpad(mu.toFixed(3), 10)} ${rpad(eta.toFixed(3), 10)} ${rpad(lambda.toFixed(3), 10)}`);
+                                    }
+                                } else {
+                                    lines.push(`  │  No positive Λ in any chunk.`);
+                                }
+                                lines.push(`  └────────────────────────────────────────────────────────────`);
+                            }
+                            lines.push("");
+
+                            // Dual variables
+                            lines.push("══════════════════════════════════════════════════════════════");
+                            lines.push("  DUAL VARIABLES");
+                            lines.push("══════════════════════════════════════════════════════════════");
+                            if (s.duals.time_prices.length > 0) {
+                                lines.push("  μ (time prices):");
+                                for (const [c, mu] of s.duals.time_prices) {
+                                    lines.push(`    ${pad(chunkLabel(c, horizonStart), 25)} μ = ${mu.toFixed(3)}`);
+                                }
+                            }
+                            if (s.duals.energy_prices.length > 0) {
+                                lines.push("  η (energy prices):");
+                                for (const [c, tag, eta] of s.duals.energy_prices) {
+                                    lines.push(`    ${pad(chunkLabel(c, horizonStart), 25)} [${pad(tag, 12)}] η = ${eta.toFixed(3)}`);
+                                }
+                            }
+                            if (s.duals.time_prices.length === 0 && s.duals.energy_prices.length === 0) {
+                                lines.push("  No binding constraints.");
+                            }
+                            lines.push("");
+
+                            // Parked
+                            if (s.parked.length > 0) {
+                                lines.push("══════════════════════════════════════════════════════════════");
+                                lines.push("  PARKED TASKS");
+                                lines.push("══════════════════════════════════════════════════════════════");
+                                lines.push("  These tasks are optimally deferred or had unconverged duals.");
+                                for (const id of s.parked) {
+                                    const info = s.task_info.find(t => t.id === id);
+                                    lines.push(`  • ${info?.name || id.slice(0, 8)}`);
+                                }
+                                lines.push("");
+                            }
+
+                            // QP priorities
+                            if (s.raw_priorities?.length > 0) {
+                                lines.push("══════════════════════════════════════════════════════════════");
+                                lines.push("  STAGE 1: QP CONTINUOUS PRIORITIES (x_ic density)");
+                                lines.push("══════════════════════════════════════════════════════════════");
+                                for (const [name, c, v] of s.raw_priorities) {
+                                    lines.push(`  ${pad(name, 45)} @ ${pad(chunkLabel(c, horizonStart), 20)}: ${v.toFixed(3)}`);
+                                }
+                                lines.push("");
+                            }
+
+                            // Packing trace
+                            if (s.packing_trace?.length > 0) {
+                                // Build a lookup from raw_priorities for Λ values
+                                const lambdaMap = new Map();
+                                if (s.raw_priorities) {
+                                    for (const [name, c, v] of s.raw_priorities) {
+                                        lambdaMap.set(`${name}:${c}`, v);
+                                    }
+                                }
+                                lines.push("══════════════════════════════════════════════════════════════════════════");
+                                lines.push("  STAGE 2: GREEDY PACKING ORDER");
+                                lines.push("══════════════════════════════════════════════════════════════════════════");
+                                lines.push(`  ${rpad("#", 4)}  ${pad("Task", 35)}  ${pad("Chunk", 20)}  ${rpad("Λ", 10)}  Slots`);
+                                lines.push("  " + "─".repeat(85));
+                                for (const [step, name, c, slots] of s.packing_trace) {
+                                    const lv = lambdaMap.get(`${name}:${c}`);
+                                    const lvStr = lv != null ? lv.toFixed(3) : "—";
+                                    lines.push(`  ${rpad(String(step), 4)}  ${pad(name, 35)}  ${pad(chunkLabel(c, horizonStart), 20)}  ${rpad(lvStr, 10)}  ${fmtSlots(slots)}`);
+                                }
+                                lines.push("");
+                            }
+
+                            // Raw JSON
+                            lines.push("══════════════════════════════════════════════════════════════");
+                            lines.push("  RAW OUTPUT");
+                            lines.push("══════════════════════════════════════════════════════════════");
+                            lines.push(JSON.stringify(s, null, 2));
+
+                            return lines.join("\n");
+                        })()}</pre>
                     </section>
                 </>}
             </div>
