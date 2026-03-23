@@ -10,6 +10,22 @@ const createTask = createAsyncThunk('tasks/create', async ({ content, position }
     return await invoke('create_task', { content, position });
 });
 
+const insertTaskAt = createAsyncThunk('tasks/insertAt', async ({ task, afterId }) => {
+    const payload = {
+        ...task,
+        tags: task.tags ?? "[]",
+        parent_id: task.parent_id ?? null,
+        start_date: task.start_date ?? null,
+        due_date: task.due_date ?? null,
+        completed_at: task.completed_at ?? null,
+        rrule: task.rrule ?? null,
+        effort: task.effort ?? 0,
+        schedule: task.schedule ?? null,
+        locked: task.locked ?? false,
+    };
+    return await invoke('insert_task_at', { task: payload, afterId: afterId ?? null });
+});
+
 const upsert = createAsyncThunk('tasks/upsert', async (task) => {
     // Ensure all fields exist for Rust deserialization
     const payload = {
@@ -84,10 +100,15 @@ const tasksSlice = createSlice({
                 state.searchResults = payload;
                 state.searchQuery = meta.arg;
             })
+            .addCase(insertTaskAt.fulfilled, (state, { payload }) => {
+                // Full snapshot returned — replace db
+                state.db = payload;
+            })
             .addCase(upsert.rejected, (_, { error }) => console.error("upsert failed:", error))
-            .addCase(remove.rejected, (_, { error }) => console.error("remove failed:", error));
+            .addCase(remove.rejected, (_, { error }) => console.error("remove failed:", error))
+            .addCase(insertTaskAt.rejected, (_, { error }) => console.error("insertTaskAt failed:", error));
     },
 });
 
-export { createTask, upsert, remove, setParent, search, reorder };
+export { createTask, upsert, remove, setParent, search, reorder, insertTaskAt };
 export default tasksSlice.reducer;

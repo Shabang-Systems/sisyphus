@@ -128,9 +128,9 @@ export default function Action({ onJumpToTask }) {
             daySet.add(dayDiff);
         }
 
-        // Sort tasks within each chunk by schedule time
+        // Sort tasks within each chunk by position (list order from planning view)
         for (const g of result.values()) {
-            g.tasks.sort((a, b) => new Date(a.schedule) - new Date(b.schedule));
+            g.tasks.sort((a, b) => a.position - b.position);
         }
 
         // Build ordered list of (day header, section label, chunk group)
@@ -183,6 +183,7 @@ export default function Action({ onJumpToTask }) {
                                         taskList={item.tasks}
                                         jumpToTaskId={null}
                                         onTaskDrag={handleTaskDrag}
+                                        onJumpToTask={onJumpToTask}
                                         scheduleDate={(() => {
                                             const d = new Date();
                                             d.setDate(d.getDate() + item.dayDiff);

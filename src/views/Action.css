@@ -131,8 +131,14 @@
     pointer-events: auto;
 }
 
-/* Hide focus exit button */
-.action-editor-wrap .focus-exit-btn {
+/* Stretch divider to match the wider task row */
+.action-editor-wrap .task-divider {
+    left: 0;
+}
+
+/* Hide focus/collapse buttons in action mode */
+.action-editor-wrap .focus-exit-btn,
+.action-editor-wrap .task-collapse-btn {
     display: none !important;
 }
 

@@ -247,6 +247,63 @@ pub async fn accept_task_schedule(
     state.snapshot().await.map_err(|e| e.to_string())
 }
 
+/// Insert a new task at a given position, shifting all tasks at or after that position.
+/// Atomic: runs shift + insert in one go.
+#[tauri::command]
+pub async fn insert_task_at(
+    task: Task,
+    after_id: Option<String>, // insert after this task's position; if None, use task.position
+    state: tauri::State<'_, GlobalState>,
+) -> Result<Vec<Task>, String> {
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+
+    // Determine insertion position
+    let insert_pos: i64 = if let Some(ref aid) = after_id {
+        let row = sqlx::query_scalar::<_, i64>("SELECT position FROM tasks WHERE id = ?")
+            .bind(aid)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(task.position);
+        row + 1
+    } else {
+        task.position
+    };
+
+    // Shift all tasks at or after insert_pos
+    sqlx::query("UPDATE tasks SET position = position + 1 WHERE position >= ?")
+        .bind(insert_pos)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Insert the new task
+    sqlx::query(
+        "INSERT INTO tasks (id, content, position, tags, parent_id, start_date, due_date, completed_at, rrule, effort, schedule, locked, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&task.id)
+    .bind(&task.content)
+    .bind(insert_pos)
+    .bind(&task.tags)
+    .bind(&task.parent_id)
+    .bind(&task.start_date)
+    .bind(&task.due_date)
+    .bind(&task.completed_at)
+    .bind(&task.rrule)
+    .bind(task.effort)
+    .bind(&task.schedule)
+    .bind(task.locked)
+    .bind(&task.created_at)
+    .bind(&task.updated_at)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    state.snapshot().await.map_err(|e| e.to_string())
+}
+
 /// Extracts the first tag from a JSON array string like `["tag1", "tag2"]`.
 /// Returns "__untagged__" if no tags.
 fn extract_first_tag(tags_json: &str) -> String {

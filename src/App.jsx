@@ -73,9 +73,12 @@ function App() {
     const [activeView, setActiveView] = useState("action");
     const [jumpToTaskId, setJumpToTaskId] = useState(null);
 
+    const [replyToTaskId, setReplyToTaskId] = useState(null);
+
     // Jump to a task in Planning view from any page
     const jumpToTask = useCallback((taskId) => {
         setJumpToTaskId(taskId);
+        setReplyToTaskId(taskId);
         setActiveView("editor");
     }, []);
 
@@ -113,7 +116,7 @@ function App() {
                     <Sidebar activeView={activeView} onViewChange={setActiveView} onLogout={logout} />
                     {activeView === "action" && <Action onJumpToTask={jumpToTask} />}
 
-                    {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} onJumpHandled={() => setJumpToTaskId(null)} />}
+                    {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} replyToTaskId={replyToTaskId} onJumpHandled={() => { setJumpToTaskId(null); setReplyToTaskId(null); }} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                     {activeView === "completed" && <Completed />}
                     {activeView === "debug" && <Debug />}

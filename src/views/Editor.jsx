@@ -11,7 +11,7 @@ import { RRule } from "rrule";
 import moment from "moment";
 import { snapshot } from "@api/utils.js";
 import { tick } from "@api/ui.js";
-import { upsert, remove, setParent, search } from "@api/tasks.js";
+import { upsert, remove, setParent, search, insertTaskAt } from "@api/tasks.js";
 import { v4 as uuid } from "uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { Tag, extractTags } from "@components/TagExtension.js";
@@ -97,10 +97,14 @@ const TaskParagraph = Node.create({
                 ["div", { class: "task-toolbar", contenteditable: "false" },
                     ["span", { class: "task-sidebar-btn task-effort-btn" },
                         ["i", { class: "fa-solid fa-circle" }]],
+                    ["span", { class: "task-sidebar-btn task-lock-btn" },
+                        ["i", { class: "fa-solid fa-lock" }]],
+                    ["span", { class: "task-sidebar-btn task-schedule-btn" },
+                        ["i", { class: "fa-solid fa-calendar-day" }]],
                     ["span", { class: "task-sidebar-btn task-start-btn" },
-                        ["i", { class: "fa-solid fa-hourglass-start" }]],
+                        ["i", { class: "fa-solid fa-circle-play" }]],
                     ["span", { class: "task-sidebar-btn task-due-btn" },
-                        ["i", { class: "fa-solid fa-hourglass-end" }]],
+                        ["i", { class: "fa-solid fa-circle-stop" }]],
                     ["span", { class: "task-sidebar-btn task-rrule-btn" },
                         ["i", { class: "fa-solid fa-rotate" }]],
                     ["span", { class: "task-sidebar-btn task-collapse-btn" },
@@ -166,7 +170,7 @@ function getSubtree(tasks, focusId) {
 
 // --- Component ---
 
-export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, onJumpHandled = null, taskList = null, scheduleDate = null, onTaskDrag = null }) {
+export default function Editor({ mode = "editor", filterTaskIds = null, searchQuery = "", jumpToTaskId = null, replyToTaskId = null, onJumpHandled = null, taskList = null, scheduleDate = null, onTaskDrag = null, onJumpToTask = null }) {
     const isBrowse = mode === "browse";
     const searchQueryRef = useRef(searchQuery);
     const dispatch = useDispatch();
@@ -197,6 +201,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const suppress = useRef(false);
     const guard = useRef(false);
     const hydrated = useRef(false);
+    const localChangeRef = useRef(false); // set when pipeline modifies tasks, skip next taskList reload
     const visible = useRef(new Map());
     const updateTimer = useRef(null);
     const pendingParentId = useRef(null);
@@ -241,30 +246,50 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 }
                 const rruleData = pendingRruleData.current;
                 pendingRruleData.current = null;
-                dispatch(upsert({
-                    id, content, position: row.position,
-                    tags: rruleData?.tags || row.tags,
-                    parent_id: rruleData?.parent_id || parentId,
-                    start_date: rruleData?.start_date,
-                    due_date: rruleData?.due_date,
-                    rrule: rruleData?.rrule,
-                    schedule: scheduleDate || undefined,
-                    locked: scheduleDate ? true : undefined,
-                    created_at: ts, updated_at: ts,
-                }));
+                if (taskList) {
+                    // In taskList mode, use atomic insert_task_at with position shifting
+                    const prevRow = row.position > 0 ? rows[row.position - 1] : null;
+                    dispatch(insertTaskAt({
+                        task: {
+                            id, content, position: 0, // position computed by Rust
+                            tags: rruleData?.tags || row.tags,
+                            parent_id: rruleData?.parent_id || parentId,
+                            start_date: rruleData?.start_date,
+                            due_date: rruleData?.due_date,
+                            rrule: rruleData?.rrule,
+                            schedule: scheduleDate || null,
+                            locked: scheduleDate ? true : false,
+                            created_at: ts, updated_at: ts,
+                        },
+                        afterId: prevRow?.taskId || null,
+                    }));
+                } else {
+                    dispatch(upsert({
+                        id, content, position: row.position,
+                        tags: rruleData?.tags || row.tags,
+                        parent_id: rruleData?.parent_id || parentId,
+                        start_date: rruleData?.start_date,
+                        due_date: rruleData?.due_date,
+                        rrule: rruleData?.rrule,
+                        schedule: scheduleDate || undefined,
+                        locked: scheduleDate ? true : undefined,
+                        created_at: ts, updated_at: ts,
+                    }));
+                }
                 visible.current.set(id, { content, position: row.position, created_at: ts });
             }
             tr.setMeta("sync", true);
             guard.current = true;
             editor.view.dispatch(tr);
             guard.current = false;
-
+            if (taskList) localChangeRef.current = true;
         }
 
         const currentIds = new Set(rows.map(r => r.taskId));
         for (const [id] of visible.current) {
             if (!currentIds.has(id)) {
                 dispatch(remove(id)); visible.current.delete(id);
+                if (taskList) localChangeRef.current = true;
             }
         }
 
@@ -278,11 +303,14 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 if (!row.taskId) continue;
                 const prev = visible.current.get(row.taskId);
                 if (!prev) continue;
-                if (prev.content !== row.content || prev.position !== row.position) {
+                // When taskList is provided, don't update position (local index != global position)
+                const posChanged = !taskList && prev.position !== row.position;
+                if (prev.content !== row.content || posChanged) {
                     // Preserve scheduling fields from Redux
                     const existing = taskMap.get(row.taskId);
                     dispatch(upsert({
-                        id: row.taskId, content: row.content, position: row.position,
+                        id: row.taskId, content: row.content,
+                        position: taskList ? (existing?.position ?? row.position) : row.position,
                         tags: row.tags, created_at: prev.created_at, updated_at: ts2,
                         parent_id: existing?.parent_id,
                         start_date: existing?.start_date, due_date: existing?.due_date,
@@ -334,6 +362,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             if (task.start_date) rules.push(`${sel} .task-start-btn { color: var(--blue) !important; }`);
             if (task.due_date) rules.push(`${sel} .task-due-btn { color: var(--orange) !important; }`);
             if (task.rrule) rules.push(`${sel} .task-rrule-btn { color: var(--blue) !important; }`);
+            if (task.schedule) rules.push(`${sel} .task-schedule-btn { color: var(--blue) !important; }`);
+            if (task.locked) {
+                rules.push(`${sel} .task-lock-btn { color: var(--blue) !important; }`);
+                rules.push(`${sel} .task-lock-btn i { --fa-primary: ""; }`);
+            }
 
             // Effort sizing
             const effortLabels = ["", "XS", "S", "M", "L", "XL"];
@@ -470,7 +503,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
             try {
                 const resolved = editor.state.doc.resolve(from);
-                if (!isBrowse && !isLoadingMore.current && resolved.index(0) === editor.state.doc.childCount - 1) {
+                if (!isBrowse && !taskList && !isLoadingMore.current && resolved.index(0) === editor.state.doc.childCount - 1) {
                     const coords = editor.view.coordsAtPos(from);
                     const container = document.querySelector(".editor-content");
                     if (coords && container) {
@@ -507,23 +540,43 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             return false;
         });
         if (targetPos != null) {
-            editor.commands.setTextSelection(targetPos + 1);
-            editor.commands.focus();
-            // Scroll into view
-            setTimeout(() => {
-                const container = document.querySelector(".editor-content");
-                try {
-                    const coords = editor.view.coordsAtPos(targetPos + 1);
-                    if (coords && container) {
-                        const containerRect = container.getBoundingClientRect();
-                        const target = coords.top - containerRect.top + container.scrollTop - container.clientHeight * 0.4;
-                        container.scrollTo({ top: target, behavior: "smooth" });
-                    }
-                } catch {}
-            }, 50);
+            // If replyToTaskId is set, create a reply (insert new paragraph after the target)
+            if (replyToTaskId) {
+                pendingParentId.current = replyToTaskId;
+                const endPos = editor.state.doc.content.size;
+                editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
+                editor.commands.focus("end");
+                // Scroll to the new paragraph at end
+                setTimeout(() => {
+                    const container = document.querySelector(".editor-content");
+                    try {
+                        const newEndPos = editor.state.doc.content.size - 1;
+                        const coords = editor.view.coordsAtPos(newEndPos);
+                        if (coords && container) {
+                            const containerRect = container.getBoundingClientRect();
+                            const target = coords.top - containerRect.top + container.scrollTop - container.clientHeight * 0.4;
+                            container.scrollTo({ top: target, behavior: "smooth" });
+                        }
+                    } catch {}
+                }, 50);
+            } else {
+                editor.commands.setTextSelection(targetPos + 1);
+                editor.commands.focus();
+                setTimeout(() => {
+                    const container = document.querySelector(".editor-content");
+                    try {
+                        const coords = editor.view.coordsAtPos(targetPos + 1);
+                        if (coords && container) {
+                            const containerRect = container.getBoundingClientRect();
+                            const target = coords.top - containerRect.top + container.scrollTop - container.clientHeight * 0.4;
+                            container.scrollTo({ top: target, behavior: "smooth" });
+                        }
+                    } catch {}
+                }, 50);
+            }
         }
         if (onJumpHandled) onJumpHandled();
-    }, [jumpToTaskId, editor, onJumpHandled]);
+    }, [jumpToTaskId, replyToTaskId, editor, onJumpHandled]);
 
     // --- Find decoration refresh ---
     useEffect(() => {
@@ -692,7 +745,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         editor.commands.setContent({ type: "doc", content: content.length ? content : [{ type: "paragraph" }] });
         setTimeout(() => {
             suppress.current = false;
-            if (!isBrowse) editor.commands.focus("end");
+            if (!isBrowse && !taskList) editor.commands.focus("end");
         }, 0);
     }, [editor, isBrowse]);
 
@@ -705,9 +758,21 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         loadTasks(active);
     }, [loading, editor]);
 
-    // Reload when taskList prop changes (browse mode and action-edit mode)
+    // Reload when taskList membership changes externally (scheduler, drag between chunks)
+    // Skip reload if the change originated from this editor (local insert/delete)
+    const prevTaskIdsRef = useRef(null);
     useEffect(() => {
         if (!taskList || !editor || loading) return;
+        const newIds = taskList.map(t => t.id).join(",");
+        if (prevTaskIdsRef.current === newIds) return;
+        prevTaskIdsRef.current = newIds;
+
+        // If change was local, ProseMirror already has the right doc — don't rebuild
+        if (localChangeRef.current) {
+            localChangeRef.current = false;
+            return;
+        }
+
         hydrated.current = true;
         loadTasks(taskList);
     }, [taskList, editor]);
@@ -811,11 +876,21 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const handleDateChange = useCallback((taskId, field, date) => {
         const task = tasksRef.current.find(t => t.id === taskId);
         if (!task) return;
-        dispatch(upsert({
-            ...task,
-            [field]: date ? date.toISOString() : null,
-            updated_at: now(),
-        }));
+        if (field === "schedule") {
+            // Schedule sets both schedule and locked
+            dispatch(upsert({
+                ...task,
+                schedule: date ? date.toISOString() : null,
+                locked: date ? true : false,
+                updated_at: now(),
+            }));
+        } else {
+            dispatch(upsert({
+                ...task,
+                [field]: date ? date.toISOString() : null,
+                updated_at: now(),
+            }));
+        }
     }, [dispatch]);
 
     const handleRruleChange = useCallback((taskId, rule) => {
@@ -1069,6 +1144,38 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             return;
         }
 
+        const scheduleBtn = e.target.closest(".task-schedule-btn");
+        if (scheduleBtn) {
+            e.stopPropagation(); e.preventDefault();
+            const taskId = scheduleBtn.closest(".task-block")?.getAttribute("data-task-id");
+            if (taskId) {
+                setRruleModal(null);
+                setDateModal(prev => prev?.taskId === taskId && prev?.field === "schedule" ? null : { taskId, field: "schedule" });
+            }
+            return;
+        }
+
+        const lockBtn = e.target.closest(".task-lock-btn");
+        if (lockBtn) {
+            e.stopPropagation(); e.preventDefault();
+            const taskId = lockBtn.closest(".task-block")?.getAttribute("data-task-id");
+            if (taskId) {
+                const task = tasksRef.current.find(t => t.id === taskId);
+                if (task) {
+                    if (task.locked) {
+                        dispatch(upsert({ ...task, locked: false, schedule: null, updated_at: now() }));
+                    } else if (task.schedule) {
+                        dispatch(upsert({ ...task, locked: true, updated_at: now() }));
+                    } else {
+                        // No schedule yet — open date picker
+                        setRruleModal(null);
+                        setDateModal({ taskId, field: "schedule" });
+                    }
+                }
+            }
+            return;
+        }
+
         const collapseBtn = e.target.closest(".task-collapse-btn");
         if (collapseBtn) {
             e.stopPropagation(); e.preventDefault();
@@ -1084,10 +1191,15 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             setDateModal(null); setRruleModal(null);
             const parentTaskId = replyBtn.closest(".task-block")?.getAttribute("data-task-id");
             if (parentTaskId) {
-                pendingParentId.current = parentTaskId;
-                const endPos = editor.state.doc.content.size;
-                editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
-                editor.commands.focus("end");
+                if (onJumpToTask) {
+                    // In action mode, jump to planning view
+                    onJumpToTask(parentTaskId);
+                } else {
+                    pendingParentId.current = parentTaskId;
+                    const endPos = editor.state.doc.content.size;
+                    editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
+                    editor.commands.focus("end");
+                }
             }
             return;
         }
@@ -1118,7 +1230,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             {dateModal && dateModalTask && (
                 <DateModal
                     key={`${dateModal.taskId}-${dateModal.field}`}
-                    label={dateModal.field === "start_date" ? strings.COMPONENTS__DATEMODAL_START : strings.COMPONENTS__DATEMODAL_DUE}
+                    label={dateModal.field === "start_date" ? strings.COMPONENTS__DATEMODAL_START : dateModal.field === "schedule" ? strings.TOOLTIPS.ACTION_SCHEDULE : strings.COMPONENTS__DATEMODAL_DUE}
                     initialDate={dateModalTask[dateModal.field] ? new Date(dateModalTask[dateModal.field]) : null}
                     onDate={(d) => handleDateChange(dateModal.taskId, dateModal.field, d)}
                     onClose={() => { setDateModal(null); editor?.commands.focus(); }}

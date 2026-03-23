@@ -31,6 +31,7 @@ pub fn run() {
             commands::reorder,
             commands::compute_schedule,
             commands::accept_task_schedule,
+            commands::insert_task_at,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
