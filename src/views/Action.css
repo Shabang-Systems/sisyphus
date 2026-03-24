@@ -1,14 +1,14 @@
 .action {
     height: 100%;
     width: 100%;
-    padding-top: 48px; /* space for title bar */
+    padding-top: 36px; /* space for title bar */
     overflow-y: auto;
     overflow-anchor: auto;
 }
 
 .action-main {
     margin-right: 60px;
-    margin-left: 30px;
+    margin-left: 15px;
 }
 
 .action-greeting {

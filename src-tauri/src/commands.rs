@@ -107,15 +107,13 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
 
     // Load models
     let dirichlet = energy::load_dirichlet(pool).await.map_err(|e| e.to_string())?;
-    let duration_model = nb::load_duration_model(pool).await.map_err(|e| e.to_string())?;
-
     // Extract text from content JSON for NB tag prediction
     let text_re = regex::Regex::new(r#""text"\s*:\s*"([^"]+)""#).unwrap();
 
     // Load NB tag model for untagged task prediction
     let (word_tag, tag_priors) = nb::load_tag_model(pool).await.map_err(|e| e.to_string())?;
 
-    // Compute debiased work requirements, using predicted tags for untagged tasks
+    // Predict tags for untagged tasks using NB Model 2
     let task_params: Vec<(String, String, i64)> = active.iter()
         .map(|t| {
             let mut tag = extract_first_tag(&t.tags);
@@ -137,8 +135,6 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
             (t.id.clone(), tag, t.effort)
         })
         .collect();
-    let debiased = nb::compute_debiased_w(&task_params, &duration_model);
-
     // Current day-of-week (1=Mon, 7=Sun) and within-day chunk position
     let now = chrono::Local::now();
     let start_dow = now.format("%u").to_string().parse::<usize>().unwrap_or(1);
@@ -211,7 +207,7 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
     }
 
     let params = SchedulerParams::default();
-    let output = scheduler::solve(&scheduler_tasks, &dirichlet, &debiased, &params, start_dow, start_h, &capacity_used);
+    let output = scheduler::solve(&scheduler_tasks, &dirichlet, &params, start_dow, start_h, &capacity_used);
 
     // Write schedule dates to DB — use the chunk where the task has the most slots.
     // This ensures an L task split across two chunks (e.g. 7+1) shows in the chunk

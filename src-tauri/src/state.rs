@@ -405,42 +405,29 @@ impl GlobalState {
             }
         }
 
-        // Update NB Model 1 (duration debiasing) if task was just completed
+        // Update Dirichlet energy model on task completion
         let now_completed = task.completed_at.is_some();
         if now_completed && !was_completed {
-            if let Some(ref schedule) = old_task.as_ref().and_then(|t| t.schedule.clone()).or(task.schedule.clone()) {
-                if let Some(ref completed_at) = task.completed_at {
-                    let parse = |s: &str| -> Option<chrono::NaiveDateTime> {
-                        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
-                            .or_else(|| chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.naive_utc()))
-                    };
-                    if let (Some(sched_dt), Some(comp_dt)) = (parse(schedule), parse(completed_at)) {
-                        let delta_mins = (comp_dt - sched_dt).num_minutes().max(0) as f64;
-                        let delta_slots = delta_mins / 30.0;
-                        let tag = if let Ok(tags) = serde_json::from_str::<Vec<String>>(&task.tags) {
-                            tags.into_iter().next().unwrap_or_else(|| "__untagged__".to_string())
-                        } else {
-                            "__untagged__".to_string()
-                        };
-                        let _ = crate::nb::update_duration_model(pool, &tag, task.effort, delta_slots).await;
-
-                        // Update Dirichlet energy model: observe this tag at completion time's (dow, chunk)
-                        let comp_local = chrono::DateTime::parse_from_rfc3339(completed_at)
-                            .map(|d| d.with_timezone(&chrono::Local))
-                            .or_else(|_| {
-                                chrono::NaiveDateTime::parse_from_str(completed_at, "%Y-%m-%d %H:%M:%S")
-                                    .map(|d| d.and_local_timezone(chrono::Local).single().unwrap_or_else(|| chrono::Local::now()))
-                            });
-                        if let Ok(dt) = comp_local {
-                            let dow = dt.format("%u").to_string().parse::<usize>().unwrap_or(1); // 1=Mon..7=Sun
-                            let chunk = (dt.hour() as usize / 4) + 1; // 1–6
-                            let slots = crate::scheduler::effort_to_slots(task.effort);
-                            let _ = crate::energy::update_dirichlet(
-                                pool,
-                                &[(dow, chunk, tag.clone(), slots)],
-                            ).await;
-                        }
-                    }
+            if let Some(ref completed_at) = task.completed_at {
+                let tag = if let Ok(tags) = serde_json::from_str::<Vec<String>>(&task.tags) {
+                    tags.into_iter().next().unwrap_or_else(|| "__untagged__".to_string())
+                } else {
+                    "__untagged__".to_string()
+                };
+                let comp_local = chrono::DateTime::parse_from_rfc3339(completed_at)
+                    .map(|d| d.with_timezone(&chrono::Local))
+                    .or_else(|_| {
+                        chrono::NaiveDateTime::parse_from_str(completed_at, "%Y-%m-%d %H:%M:%S")
+                            .map(|d| d.and_local_timezone(chrono::Local).single().unwrap_or_else(|| chrono::Local::now()))
+                    });
+                if let Ok(dt) = comp_local {
+                    let dow = dt.format("%u").to_string().parse::<usize>().unwrap_or(1); // 1=Mon..7=Sun
+                    let chunk = (dt.hour() as usize / 4) + 1; // 1–6
+                    let slots = crate::scheduler::effort_to_slots(task.effort);
+                    let _ = crate::energy::update_dirichlet(
+                        pool,
+                        &[(dow, chunk, tag.clone(), slots)],
+                    ).await;
                 }
             }
         }
@@ -590,6 +577,16 @@ impl GlobalState {
             for cap in tag_re.captures_iter(&content) {
                 all_tags.insert(cap[1].to_string());
             }
+        }
+
+        // Also include tags learned via training (nb_tag_priors)
+        let nb_rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT tag FROM nb_tag_priors"
+        )
+        .fetch_all(pool)
+        .await?;
+        for (tag,) in nb_rows {
+            all_tags.insert(tag);
         }
 
         Ok(all_tags.into_iter().collect())

@@ -91,6 +91,10 @@ export default function Training({ onBack }) {
                     <span className="training-title">{strings.VIEWS__TRAINING_TITLE}</span>
                 </div>
 
+                <div className="training-instructions">
+                    {strings.VIEWS__TRAINING_INSTRUCTIONS.map((p, i) => <p key={i}>{p}</p>)}
+                </div>
+
                 <div className="training-input-section">
                     <input
                         className="training-input"
@@ -120,10 +124,6 @@ export default function Training({ onBack }) {
                             </div>
                         ))}
                     </div>
-                )}
-
-                {tasks.length === 0 && trained.length === 0 && (
-                    <div className="training-empty">{strings.VIEWS__TRAINING_EMPTY}</div>
                 )}
 
                 <div className="training-grid-section">

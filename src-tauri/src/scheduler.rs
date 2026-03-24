@@ -278,16 +278,17 @@ impl SchedulerParams {
     }
 }
 
-/// Delay reward r_i(c) — single source of truth.
+/// Preference reward r_i(c) — single source of truth.
 ///
-/// r_i(c) = α_k · T / max(tᶠ − c, 1)
+/// r_i(c) = α_k · e_k(c)
 ///
-/// Inversely proportional to remaining slack. A task due in 2 chunks gets
-/// r = 84/2 = 42. A no-deadline task (tᶠ = 83) at c = 0 gets r ≈ 1.
-/// The max(·, 1) caps the blowup — maximum r is T (84).
-fn delay_reward(alpha: f64, t_f: usize, c: usize) -> f64 {
-    let slack = (t_f as f64 - c as f64).max(1.0);
-    alpha * TOTAL_CHUNKS as f64 / slack
+/// Pure preference signal: the scheduler values placing work where the user
+/// is most productive (high Dirichlet efficiency). Deadlines are enforced
+/// by the feasibility window [tˢ, tᶠ] — tasks simply cannot be assigned
+/// outside their window. Urgency is handled by ν (completion pressure dual):
+/// tight windows → high ν → high Λ, without needing 1/slack in the reward.
+fn delay_reward(alpha: f64, eff: f64) -> f64 {
+    alpha * eff
 }
 
 /// Returns the absolute wall-clock hour position (0–5) for a chunk index,
@@ -340,8 +341,6 @@ fn chunk_to_dow(chunk_index: usize, start_dow: usize, start_h: usize) -> usize {
 /// * `tasks` — Active tasks with pre-computed effort, windows, tags, and precedence.
 /// * `dirichlet` — Dirichlet concentration parameters ξ_{mk} keyed by `(dow, chunk_pos, tag)`.
 ///   Used to compute per-tag energy budgets C_k(c). Missing entries default to ξ=1 (uniform).
-/// * `debiased_w` — Task ID → debiased work requirement from NB Model 1.
-///   Falls back to `task.w` if absent.
 /// * `params` — Scheduling parameters (α, β, γ).
 /// * `start_dow` — Day-of-week for chunk 0 (1=Monday, 7=Sunday).
 ///
@@ -360,7 +359,6 @@ fn chunk_to_dow(chunk_index: usize, start_dow: usize, start_h: usize) -> usize {
 pub fn solve(
     tasks: &[TaskInput],
     dirichlet: &HashMap<(usize, usize, String), f64>,
-    debiased_w: &HashMap<String, f64>,
     params: &SchedulerParams,
     start_dow: usize,
     start_h: usize, // within-day chunk position of chunk 0 (0–5, e.g. 3 for 12:00–16:00)
@@ -398,16 +396,17 @@ pub fn solve(
         (raw - used).max(0.0)
     }).collect();
 
-    // C_k(c): per-tag energy capacity from Dirichlet posterior mean × C(c)
-    let mut energy_cap: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
+    // ξ_k(c): raw Dirichlet concentration parameters per tag per chunk.
+    // Used to compute efficiency multipliers e_k(c) = ξ_k(c) / ξ̄_k,
+    // where ξ̄_k is the mean of ξ_k across all chunks in the horizon.
     let mut dir_xi: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
     let mut dir_mean: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
+    // energy_cap kept for diagnostic output only (not used in constraints)
+    let mut energy_cap: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
     for c in 0..TOTAL_CHUNKS {
         let dow = chunk_to_dow(c, start_dow, start_h);
         let h = abs_hour_pos(c, start_h) + 1; // 1–6 for Dirichlet lookup
 
-        // Posterior mean: E[θ_{mk}] = ξ_{mk} / Σ_{k'} ξ_{mk'}
-        // __untagged__ gets a 10× prior so untagged tasks aren't starved for energy
         let xi_vals: Vec<f64> = tag_set.iter()
             .map(|tag| {
                 let default = if tag == "__untagged__" { 10.0 } else { 1.0 };
@@ -420,6 +419,20 @@ pub fn solve(
             dir_mean[k][c] = xi_vals[k] / xi_sum;
             if cap[c] > 0.0 {
                 energy_cap[k][c] = dir_mean[k][c] * cap[c];
+            }
+        }
+    }
+
+    // Efficiency multiplier: e_k(c) = ξ_k(c) / ξ̄_k
+    // Normalized per-tag across chunks so that e > 1 at preferred times
+    // (fewer physical slots needed) and e < 1 at non-preferred times.
+    // Clamped to [0.2, 5.0] to prevent extreme stretching or compression.
+    let mut efficiency: Vec<Vec<f64>> = vec![vec![1.0; TOTAL_CHUNKS]; n_tags];
+    for k in 0..n_tags {
+        let xi_mean: f64 = dir_xi[k].iter().sum::<f64>() / TOTAL_CHUNKS as f64;
+        if xi_mean > 1e-9 {
+            for c in 0..TOTAL_CHUNKS {
+                efficiency[k][c] = (dir_xi[k][c] / xi_mean).clamp(0.2, 5.0);
             }
         }
     }
@@ -466,14 +479,14 @@ pub fn solve(
     // Phase 4: Build q vector (linear cost)
     // ──────────────────────────────────────────────────────────────────────
     //
-    // q[x_{ic}] = −r_i(c) = −α_k · T / max(tᶠ − c, 1)
+    // q[x_{ic}] = −r_i(c) = −α_k · e_k(c) · T / max(tᶠ − c, 1)
     //
-    // See delay_reward() for the formula. 1/slack urgency: tasks near their
-    // deadline get hyperbolically increasing reward.
+    // See delay_reward() for the formula. Pure preference: α · e_k(c).
 
     let mut q = vec![0.0; n_vars];
     for (var, &(i, c)) in x_vars.iter().enumerate() {
-        let r_ic = delay_reward(params.alpha_for(&tasks[i].tag), tasks[i].t_f, c);
+        let k = tag_idx[&tasks[i].tag];
+        let r_ic = delay_reward(params.alpha_for(&tasks[i].tag), efficiency[k][c]);
         q[var] = -r_ic;
     }
 
@@ -496,11 +509,12 @@ pub fn solve(
 
     // Constraint counts
     let n_c1 = TOTAL_CHUNKS;                        // chunk capacity
-    let n_c2 = n_tags * TOTAL_CHUNKS;               // energy by tag
+    // C2 (energy by tag) removed — Dirichlet preference now enters via objective
+    let n_c2 = 0;
     let n_c3 = n;                                    // work completion
     let n_c5 = prec_pairs.len() * TOTAL_CHUNKS;     // precedence
     let n_bounds = n_vars;                           // variable bounds [0, 8]
-    let n_constraints = n_c1 + n_c2 + n_c3 + n_c5;
+    let n_constraints = n_c1 + n_c3 + n_c5;
     let total_rows = n_constraints + n_bounds;
 
     // Build A in COO (row, col, val) then assemble into dense column-major
@@ -528,26 +542,15 @@ pub fn solve(
         row += 1;
     }
 
-    // ── C2: Energy by tag class ──
-    // Σ_{i: k_i=k} x_{ic} ≤ C_k(c) for all c, k
-    for k in 0..n_tags {
-        for c in 0..TOTAL_CHUNKS {
-            for &var in &chunk_to_vars[c] {
-                let (i, _) = x_vars[var];
-                if tag_idx[&tasks[i].tag] == k {
-                    coo.push((row, var, 1.0));
-                }
-            }
-            l_bounds.push(f64::NEG_INFINITY);
-            u_bounds.push(energy_cap[k][c]);
-            row += 1;
-        }
-    }
+    // C2 (energy by tag) removed — Dirichlet preference now enters via
+    // efficiency-scaled work completion (C3).
 
     // ── C3: Work completion (equality) ──
     // Σ_c x_{ic} = w_i for all i
+    //
+    // Dirichlet efficiency enters the objective (r × e), not this constraint.
     for i in 0..n {
-        let w = debiased_w.get(&tasks[i].id).copied().unwrap_or(tasks[i].w);
+        let w = tasks[i].w;
         for &(var, _) in &task_to_vars[i] {
             coo.push((row, var, 1.0));
         }
@@ -562,8 +565,8 @@ pub fn solve(
     //
     // Uses x_var_map for O(1) lookup instead of scanning all vars.
     for &(i, j) in &prec_pairs {
-        let w_i = debiased_w.get(&tasks[i].id).copied().unwrap_or(tasks[i].w);
-        let w_j = debiased_w.get(&tasks[j].id).copied().unwrap_or(tasks[j].w);
+        let w_i = tasks[i].w;
+        let w_j = tasks[j].w;
 
         for c in 0..TOTAL_CHUNKS {
             if w_i > 0.0 && w_j > 0.0 {
@@ -657,7 +660,7 @@ pub fn solve(
     // Pre-flight: check total capacity vs total work
     let total_cap: f64 = cap.iter().sum();
     let total_work: f64 = tasks.iter()
-        .map(|t| debiased_w.get(&t.id).copied().unwrap_or(t.w))
+        .map(|t| t.w)
         .sum();
 
     let mut output = SchedulerOutput {
@@ -694,7 +697,7 @@ pub fn solve(
                     let y = s.y();
 
                     // Step 2: Compute Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c}
-                    let lambda = compute_lambda(&x_vars, tasks, params, &tag_idx, n_c1, n_c2, y);
+                    let lambda = compute_lambda(&x_vars, tasks, params, &tag_idx, &efficiency, n_c1, n_c2, y);
                     for &(i, c, l) in &lambda {
                         if l > 0.01 {
                             output.raw_priorities.push((tasks[i].name.clone(), c, l));
@@ -702,16 +705,16 @@ pub fn solve(
                     }
 
                     // Step 3: Greedy pack using Λ directly.
-                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, debiased_w, &cap, &energy_cap, &tag_idx, n);
+                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, &cap, n);
                     output.packing_trace = trace;
-                    build_output_from_schedule(&schedule, &x_vars, tasks, params, debiased_w,
-                        &tag_set, n_c1, n_c2, start_h, &s, &mut output);
+                    build_output_from_schedule(&schedule, &x_vars, tasks, params,
+                        &tag_set, &efficiency, n_c1, n_c2, start_h, &s, &mut output);
                 },
                 osqp::Status::PrimalInfeasible(_) => {
                     output.errors.push("QP is infeasible: cannot satisfy all task deadlines + capacity constraints simultaneously. Try relaxing deadlines or reducing task sizes.".to_string());
                     // Still populate task_info for diagnostics
                     for task in tasks {
-                        let w = debiased_w.get(&task.id).copied().unwrap_or(task.w);
+                        let w = task.w;
                         output.task_info.push(TaskScheduleInfo {
                             id: task.id.clone(), name: task.name.clone(), w,
                             tag: task.tag.clone(), t_s: task.t_s, t_f: task.t_f,
@@ -726,14 +729,14 @@ pub fn solve(
                 osqp::Status::MaxIterationsReached(s) | osqp::Status::TimeLimitReached(s) => {
                     output.errors.push("Solver hit time/iteration limit. Using partial duals.".to_string());
                     let y = s.y();
-                    let lambda = compute_lambda(&x_vars, tasks, params, &tag_idx, n_c1, n_c2, y);
+                    let lambda = compute_lambda(&x_vars, tasks, params, &tag_idx, &efficiency, n_c1, n_c2, y);
                     for &(i, c, l) in &lambda {
                         if l > 0.01 { output.raw_priorities.push((tasks[i].name.clone(), c, l)); }
                     }
-                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, debiased_w, &cap, &energy_cap, &tag_idx, n);
+                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, &cap, n);
                     output.packing_trace = trace;
-                    build_output_from_schedule(&schedule, &x_vars, tasks, params, debiased_w,
-                        &tag_set, n_c1, n_c2, start_h, &s, &mut output);
+                    build_output_from_schedule(&schedule, &x_vars, tasks, params,
+                        &tag_set, &efficiency, n_c1, n_c2, start_h, &s, &mut output);
                 },
                 other => {
                     output.errors.push(format!("Solver failed: {:?}", other));
@@ -754,33 +757,33 @@ fn extract_mu(y: &[f64], c: usize) -> f64 {
     if c < y.len() { (-y[c]).max(0.0) } else { 0.0 }
 }
 
-fn extract_eta(y: &[f64], n_c1: usize, k: usize, c: usize) -> f64 {
-    let row = n_c1 + k * TOTAL_CHUNKS + c;
-    if row < y.len() { (-y[row]).max(0.0) } else { 0.0 }
-}
+
 
 fn extract_nu(y: &[f64], n_c1: usize, n_c2: usize, i: usize) -> f64 {
     let row = n_c1 + n_c2 + i;
     if row < y.len() { -y[row] } else { 0.0 }
 }
 
-/// Compute Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c} for all (task, chunk) pairs.
+/// Compute Λ_{ic} = r_i(c) + ν_i − μ_c for all (task, chunk) pairs.
+///
+/// r_i(c) already includes the efficiency multiplier e_k(c), so the
+/// Dirichlet preference is baked into the urgency reward.
 fn compute_lambda(
     x_vars: &[(usize, usize)],
     tasks: &[TaskInput],
     params: &SchedulerParams,
     tag_idx: &HashMap<String, usize>,
+    efficiency: &[Vec<f64>],
     n_c1: usize,
     n_c2: usize,
     y: &[f64],
 ) -> Vec<(usize, usize, f64)> {
     x_vars.iter().map(|&(i, c)| {
-        let r_ic = delay_reward(params.alpha_for(&tasks[i].tag), tasks[i].t_f, c);
+        let k = tag_idx.get(&tasks[i].tag).copied().unwrap_or(0);
+        let r_ic = delay_reward(params.alpha_for(&tasks[i].tag), efficiency[k][c]);
         let nu_i = extract_nu(y, n_c1, n_c2, i);
         let mu_c = extract_mu(y, c);
-        let k = tag_idx.get(&tasks[i].tag).copied().unwrap_or(0);
-        let eta_kc = extract_eta(y, n_c1, k, c);
-        (i, c, r_ic + nu_i - mu_c - eta_kc)
+        (i, c, r_ic + nu_i - mu_c)
     }).collect()
 }
 
@@ -804,10 +807,7 @@ fn compute_lambda(
 fn greedy_pack_lambda(
     lambda: &[(usize, usize, f64)], // (task_idx, chunk, Λ)
     tasks: &[TaskInput],
-    debiased_w: &HashMap<String, f64>,
     cap: &[f64],
-    energy_cap: &[Vec<f64>],  // energy_cap[tag_k][chunk_c]
-    tag_idx: &HashMap<String, usize>,
     n: usize,
 ) -> (Vec<(usize, usize, f64)>, Vec<(usize, String, usize, f64)>) {
     // Sort ALL (task, chunk) pairs by Λ descending — don't filter out negatives.
@@ -826,18 +826,11 @@ fn greedy_pack_lambda(
     });
 
     let mut remaining_cap: Vec<f64> = cap.to_vec();
+    // remaining_work tracks *effective* work (efficiency-scaled)
     let mut remaining_work: Vec<f64> = (0..n)
-        .map(|i| debiased_w.get(&tasks[i].id).copied().unwrap_or(tasks[i].w))
+        .map(|i| tasks[i].w)
         .collect();
 
-    // Per-tag energy budget remaining: remaining_energy[k][c]
-    let n_tags = energy_cap.len();
-    let mut remaining_energy: Vec<Vec<f64>> = energy_cap.to_vec();
-
-    // Track per-task cumulative fractional completion for precedence checking
-    let task_w: Vec<f64> = (0..n)
-        .map(|i| debiased_w.get(&tasks[i].id).copied().unwrap_or(tasks[i].w))
-        .collect();
     let mut assigned: Vec<f64> = vec![0.0; n];
     let mut latest_chunk: Vec<Option<usize>> = vec![None; n];
 
@@ -852,66 +845,79 @@ fn greedy_pack_lambda(
     let mut trace: Vec<(usize, String, usize, f64)> = vec![];
     let mut step = 0;
 
-    // ── Pass 1: energy-aware ──
-    for &(task_idx, c, _lambda) in &pairs {
-        if remaining_work[task_idx] <= 0.01 { continue; }
-        if remaining_cap[c] <= 0.01 { continue; }
+    // ── Greedy packing (no splitting) ──
+    // Each task is assigned to exactly one chunk. Tasks are processed in
+    // topological order (BFS from DAG roots) so parents are placed before
+    // children. Within each BFS level, tasks are sorted by best Λ descending.
 
-        // Feasibility window check
-        if c < tasks[task_idx].t_s || c > tasks[task_idx].t_f { continue; }
-
-        // Energy budget check: does this tag have remaining energy in this chunk?
-        let k = tag_idx.get(&tasks[task_idx].tag).copied().unwrap_or(0);
-        if k < n_tags && remaining_energy[k][c] <= 0.01 { continue; }
-
-        // Precedence check
-        if let Some(parent_idx) = parent_of[task_idx] {
-            if task_w[parent_idx] > 0.01 {
-                let parent_frac = assigned[parent_idx] / task_w[parent_idx];
-                let child_frac_after = (assigned[task_idx] + 0.01) / task_w[task_idx];
-                if child_frac_after > parent_frac + 0.01 {
-                    continue;
-                }
-            }
-        }
-
-        let energy_avail = if k < n_tags { remaining_energy[k][c] } else { f64::MAX };
-        let assign = remaining_work[task_idx].min(remaining_cap[c]).min(energy_avail);
-        schedule.push((task_idx, c, assign));
-        trace.push((step, tasks[task_idx].name.clone(), c, assign));
-        remaining_cap[c] -= assign;
-        remaining_work[task_idx] -= assign;
-        assigned[task_idx] += assign;
-        if k < n_tags { remaining_energy[k][c] -= assign; }
-        latest_chunk[task_idx] = Some(c);
-        step += 1;
+    // Build per-task Λ lookup: task_idx → vec of (chunk, Λ) sorted by Λ desc
+    let mut task_lambdas: Vec<Vec<(usize, f64)>> = vec![vec![]; n];
+    for &(ti, c, lambda) in &pairs {
+        task_lambdas[ti].push((c, lambda));
+    }
+    for v in &mut task_lambdas {
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     }
 
-    // ── Pass 2: energy-ignored — re-sort remaining pairs by Λ, skip energy check ──
-    // Same Λ ordering as pass 1, but only energy constraints are relaxed.
-    for &(task_idx, c, _lambda) in &pairs {
-        if remaining_work[task_idx] <= 0.01 { continue; }
-        if remaining_cap[c] <= 0.01 { continue; }
-        if c < tasks[task_idx].t_s || c > tasks[task_idx].t_f { continue; }
+    // BFS topological order: roots first, then children
+    let mut children_of: Vec<Vec<usize>> = vec![vec![]; n];
+    let mut in_degree: Vec<usize> = vec![0; n];
+    for (i, p) in parent_of.iter().enumerate() {
+        if let Some(pi) = p {
+            children_of[*pi].push(i);
+            in_degree[i] += 1;
+        }
+    }
 
-        // Precedence check (same as pass 1)
-        if let Some(parent_idx) = parent_of[task_idx] {
-            if task_w[parent_idx] > 0.01 {
-                let parent_frac = assigned[parent_idx] / task_w[parent_idx];
-                let child_frac_after = (assigned[task_idx] + 0.01) / task_w[task_idx];
-                if child_frac_after > parent_frac + 0.01 {
-                    continue;
+    // Collect BFS levels
+    let mut queue: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
+    let mut bfs_order: Vec<Vec<usize>> = vec![];
+    while !queue.is_empty() {
+        // Sort this level by best Λ descending
+        queue.sort_by(|&a, &b| {
+            let la = task_lambdas[a].first().map(|x| x.1).unwrap_or(f64::NEG_INFINITY);
+            let lb = task_lambdas[b].first().map(|x| x.1).unwrap_or(f64::NEG_INFINITY);
+            lb.partial_cmp(&la).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut next_queue = vec![];
+        for &ti in &queue {
+            for &ci in &children_of[ti] {
+                in_degree[ci] -= 1;
+                if in_degree[ci] == 0 {
+                    next_queue.push(ci);
                 }
             }
         }
+        bfs_order.push(std::mem::take(&mut queue));
+        queue = next_queue;
+    }
 
-        let assign = remaining_work[task_idx].min(remaining_cap[c]);
-        schedule.push((task_idx, c, assign));
-        trace.push((step, tasks[task_idx].name.clone(), c, assign));
-        remaining_cap[c] -= assign;
-        remaining_work[task_idx] -= assign;
-        assigned[task_idx] += assign;
-        step += 1;
+    // Place tasks level by level
+    for level in &bfs_order {
+        for &task_idx in level {
+            let w = remaining_work[task_idx];
+            if w <= 0.01 { continue; }
+
+            // Find the best chunk (highest Λ) where this task fits entirely
+            let mut best_chunk: Option<(usize, f64)> = None;
+            for &(c, lambda) in &task_lambdas[task_idx] {
+                if c < tasks[task_idx].t_s || c > tasks[task_idx].t_f { continue; }
+                if remaining_cap[c] < w - 0.01 { continue; }
+                if best_chunk.is_none() || lambda > best_chunk.unwrap().1 {
+                    best_chunk = Some((c, lambda));
+                }
+            }
+
+            if let Some((c, _)) = best_chunk {
+                schedule.push((task_idx, c, w));
+                trace.push((step, tasks[task_idx].name.clone(), c, w));
+                remaining_cap[c] -= w;
+                remaining_work[task_idx] = 0.0;
+                assigned[task_idx] = w;
+                latest_chunk[task_idx] = Some(c);
+                step += 1;
+            }
+        }
     }
 
     // Capacity check: verify no chunk is over-allocated
@@ -934,8 +940,8 @@ fn build_output_from_schedule(
     x_vars: &[(usize, usize)],
     tasks: &[TaskInput],
     params: &SchedulerParams,
-    debiased_w: &HashMap<String, f64>,
     tag_set: &[String],
+    efficiency: &[Vec<f64>],
     n_c1: usize,
     n_c2: usize,
     start_h: usize,
@@ -971,20 +977,20 @@ fn build_output_from_schedule(
 
     for (i, task) in tasks.iter().enumerate() {
         let total = task_allocated.get(&i).copied().unwrap_or(0.0);
-        let w = debiased_w.get(&task.id).copied().unwrap_or(task.w);
+        let w = task.w;
         let nu_i = extract_nu(y, n_c1, n_c2, i);
         let alpha = params.alpha_for(&task.tag);
 
-        // (chunk, Λ, r_ic, ν_i, μ_c, η_kc)
+        // (chunk, Λ, r_ic, ν_i, μ_c, e_kc)
         let mut scores: Vec<(usize, f64, f64, f64, f64, f64)> = vec![];
         for &(vi, c) in x_vars.iter() {
             if vi == i {
-                let r_ic = delay_reward(alpha, task.t_f, c);
-                let mu_c = extract_mu(y, c);
                 let k = tag_idx_map.get(&task.tag).copied().unwrap_or(0);
-                let eta_kc = extract_eta(y, n_c1, k, c);
-                let l = r_ic + nu_i - mu_c - eta_kc;
-                scores.push((c, l, r_ic, nu_i, mu_c, eta_kc));
+                let e_kc = efficiency[k][c];
+                let r_ic = delay_reward(alpha, e_kc);
+                let mu_c = extract_mu(y, c);
+                let l = r_ic + nu_i - mu_c;
+                scores.push((c, l, r_ic, nu_i, mu_c, e_kc));
             }
         }
 
@@ -1015,15 +1021,7 @@ fn build_output_from_schedule(
             if mu > 0.01 { output.duals.time_prices.push((c, mu)); }
         }
     }
-    for (k, tag) in tag_set.iter().enumerate() {
-        for c in 0..TOTAL_CHUNKS {
-            let row_idx = n_c1 + k * TOTAL_CHUNKS + c;
-            if row_idx < y.len() {
-                let eta = (-y[row_idx]).max(0.0);
-                if eta > 0.01 { output.duals.energy_prices.push((c, tag.clone(), eta)); }
-            }
-        }
-    }
+    // C2 (energy by tag) removed — no η duals to extract.
 }
 
 // Keep old extract_solution for reference but unused

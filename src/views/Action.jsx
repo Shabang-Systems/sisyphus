@@ -3,7 +3,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
 import { updateTask } from "@api/tasks.js";
 import { snapshot } from "@api/utils.js";
-import { txSet } from "@api/sync.js";
+import { txSet, flushNow } from "@api/sync.js";
 import moment from "moment";
 import strings from "@strings";
 import Editor from "@views/Editor.jsx";
@@ -83,6 +83,7 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
                     dispatch(updateTask({ id: tid, changes: { schedule: sched, locked: true, updated_at: now() } }));
                     txSet(tid, "schedule", sched);
                     txSet(tid, "locked", true);
+                    flushNow();
                 }
             }
         };

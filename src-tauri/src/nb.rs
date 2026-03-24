@@ -1,28 +1,12 @@
-//! # Naive Bayes Models for Task Scheduling
-//!
-//! Two complementary NB models that improve scheduling quality over time.
-//!
-//! ## Model 1: Duration Debiasing
-//!
-//! Users systematically underestimate task duration. This model learns a scalar
-//! correction per (tag, effort-size) pair from observed completion times.
-//!
-//! Training signal: when a task is completed, `Δ = t_complete − t_scheduled`
-//! measures actual duration in slots. The model maintains a running mean of Δ
-//! for each (tag, size) combination. After ≥5 observations, the debiased work
-//! requirement `w_i` replaces the raw T-shirt size mapping.
-//!
-//! ## Model 2: Tag Prediction
+//! # Naive Bayes Tag Prediction
 //!
 //! Predicts tag class for untagged tasks from bag-of-words of task text.
 //! Multinomial Naive Bayes produces a full posterior `p(k | b_i) ∈ Δ^{K-1}`.
 //!
-//! Used to:
-//! - Substitute soft-weighted α̃_i, β̃_i for untagged tasks in the objective
-//! - Distribute untagged energy budgets in constraint (C2)
-//! - Distribute Dirichlet observations proportionally
+//! Used to substitute predicted tags for untagged tasks so the Dirichlet
+//! efficiency model can apply time-of-day preferences.
 //!
-//! Both models update incrementally. No batch retraining required.
+//! Updates incrementally. No batch retraining required.
 
 use std::collections::HashMap;
 use anyhow::Result;
@@ -37,66 +21,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Loads NB Model 1 (duration debiasing) corrections from the database.
-///
-/// Returns a map of `(tag, effort_size) → mean_actual_slots`.
-/// Only includes entries with ≥5 observations.
-pub async fn load_duration_model(pool: &SqlitePool) -> Result<HashMap<(String, i64), f64>> {
-    let rows: Vec<(String, i64, f64, i64)> = sqlx::query_as(
-        "SELECT tag, size, total_observed, count FROM nb_duration WHERE count >= 5"
-    ).fetch_all(pool).await?;
-
-    let mut model = HashMap::new();
-    for (tag, size, total, count) in rows {
-        if count > 0 {
-            model.insert((tag, size), total / count as f64);
-        }
-    }
-    Ok(model)
-}
-
-/// Updates NB Model 1 with an observed task completion.
-///
-/// `actual_slots`: the number of slots the task actually took (measured from
-/// schedule time to completion time).
-pub async fn update_duration_model(
-    pool: &SqlitePool,
-    tag: &str,
-    effort_size: i64,
-    actual_slots: f64,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO nb_duration (tag, size, total_observed, count) VALUES (?, ?, ?, 1) \
-         ON CONFLICT(tag, size) DO UPDATE SET \
-         total_observed = total_observed + ?, count = count + 1"
-    )
-    .bind(tag)
-    .bind(effort_size)
-    .bind(actual_slots)
-    .bind(actual_slots)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Computes debiased work requirements for a set of tasks.
-///
-/// For each task, looks up the (tag, effort) pair in Model 1. If ≥5 observations
-/// exist, uses the learned mean. Otherwise, uses the raw T-shirt size mapping.
-pub fn compute_debiased_w(
-    tasks: &[(String, String, i64)], // (task_id, tag, effort)
-    model: &HashMap<(String, i64), f64>,
-) -> HashMap<String, f64> {
-    let mut result = HashMap::new();
-    for (id, tag, effort) in tasks {
-        let raw_w = crate::scheduler::effort_to_slots(*effort);
-        let debiased = model.get(&(tag.clone(), *effort)).copied().unwrap_or(raw_w);
-        result.insert(id.clone(), debiased);
-    }
-    result
-}
-
-/// Loads NB Model 2 (tag prediction) from the database.
+/// Loads NB tag model (tag prediction) from the database.
 ///
 /// Returns:
 /// - Word-tag counts: `word → tag → count`
