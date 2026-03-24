@@ -840,6 +840,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             if (field === "start_date") {
                 changes.is_deferred = val ? val > new Date().toISOString() : false;
             }
+            if (field === "due_date") {
+                // Optimistic: set effective_due immediately so the UI reflects the change.
+                // Rust will recompute the true effective_due (min of descendant tree) on upsert.
+                changes.effective_due = val;
+            }
             dispatch(updateTask({ id: taskId, changes }));
             txSet(taskId, field, val);
         }

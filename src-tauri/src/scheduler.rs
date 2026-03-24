@@ -898,9 +898,15 @@ fn greedy_pack_lambda(
             let w = remaining_work[task_idx];
             if w <= 0.01 { continue; }
 
+            // Precedence: child must be scheduled at or after parent's chunk
+            let min_chunk = parent_of[task_idx]
+                .and_then(|pi| latest_chunk[pi])
+                .unwrap_or(0);
+
             // Find the best chunk (highest Λ) where this task fits entirely
             let mut best_chunk: Option<(usize, f64)> = None;
             for &(c, lambda) in &task_lambdas[task_idx] {
+                if c < min_chunk { continue; } // must be at or after parent
                 if c < tasks[task_idx].t_s || c > tasks[task_idx].t_f { continue; }
                 if remaining_cap[c] < w - 0.01 { continue; }
                 if best_chunk.is_none() || lambda > best_chunk.unwrap().1 {
