@@ -640,9 +640,9 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const jumpToTaskIdRef = useRef(jumpToTaskId);
     jumpToTaskIdRef.current = jumpToTaskId;
 
-    const loadTasks = useCallback((taskArray) => {
+    const loadTasks = useCallback((taskArray, preserveOrder = false) => {
         if (!editor) return;
-        const sorted = [...taskArray].sort((a, b) => a.position - b.position);
+        const sorted = preserveOrder ? taskArray : [...taskArray].sort((a, b) => a.position - b.position);
         allTasksRef.current = sorted;
 
         // Browse/completed: first PAGE_SIZE (most relevant at top). Planning: last PAGE_SIZE (newest at bottom).
@@ -717,7 +717,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
         hydrated.current = true;
         setIsHydrated(true);
-        loadTasks(taskList);
+        loadTasks(taskList, true);
     }, [taskList, editor]);
 
     // Load more tasks on scroll — planning: scroll-to-top prepends older tasks;
