@@ -51,9 +51,7 @@ export default function Settings({ onLogout, triggerRebalance }) {
         <div className="settings">
             <div className="drag-region" data-tauri-drag-region />
             <div className="settings-main">
-                <div className="settings-greeting">{strings.VIEWS__SETTINGS_TITLE}</div>
-
-                <div className="settings-section">
+                <div className="settings-section settings-first-section">
                     <div className="settings-section-label">{strings.VIEWS__SETTINGS_CALENDARS}</div>
                     <div className="settings-section-hint">{strings.VIEWS__SETTINGS_CALENDARS_HINT}</div>
                     {calendars.map((url, i) => (
@@ -71,23 +69,22 @@ export default function Settings({ onLogout, triggerRebalance }) {
                             </span>
                         </div>
                     ))}
-                    <div className="settings-cal-add" onClick={addUrl}>
-                        <i className="fa-solid fa-plus" /> {strings.VIEWS__SETTINGS_ADD_CALENDAR}
+                    <div className="settings-cal-add-btn" onClick={addUrl}>
+                        <i className="fa-solid fa-plus" />
                     </div>
                 </div>
 
                 <div className="settings-section">
                     <div className="settings-section-label">{strings.VIEWS__SETTINGS_TRAINING}</div>
-                    <div className="settings-section-hint">{strings.VIEWS__SETTINGS_TRAINING_HINT}</div>
-                    <div className="settings-cal-add" onClick={() => setSubView("training")}>
-                        <i className="fa-solid fa-flask" /> {strings.VIEWS__SETTINGS_OPEN_TRAINING}
+                    <div className="settings-section-hint">
+                        <span className="settings-cal-add" onClick={() => setSubView("training")}>{strings.VIEWS__SETTINGS_TRAINING_CTA}</span> {strings.VIEWS__SETTINGS_TRAINING_HINT}
                     </div>
                 </div>
 
                 <div className="settings-section">
                     <div className="settings-section-label">{strings.VIEWS__DEBUG_TITLE}</div>
-                    <div className="settings-cal-add" onClick={() => setSubView("debug")}>
-                        <i className="fa-solid fa-user-ninja" /> {strings.VIEWS__DEBUG_TITLE.toLowerCase()}
+                    <div className="settings-section-hint">
+                        <span className="settings-cal-add" onClick={() => setSubView("debug")}>{strings.VIEWS__DEBUG_CTA}</span> {strings.VIEWS__DEBUG_HINT}
                     </div>
                 </div>
 

@@ -27,7 +27,7 @@ function dayLabel(dayOffset) {
 
 function now() { return new Date().toISOString().replace("T", " ").slice(0, 19); }
 
-export default function Action({ onJumpToTask, triggerRebalance }) {
+export default function Action({ onJumpToTask, triggerRebalance, onViewChange }) {
     const dispatch = useDispatch();
     const allTasks = useSelector(state => state.tasks.db);
     const taskMapMemo = useMemo(() => new Map(allTasks.map(t => [t.id, t])), [allTasks]);
@@ -215,6 +215,15 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
                                 triggerRebalance={triggerRebalance}
                             />
                         </div>
+                    </div>
+                )}
+
+                {groups.length === 0 && parkedTasks.length === 0 && (
+                    <div className="action-empty">
+                        {strings.VIEWS__ACTION_EMPTY[Math.floor(Math.random() * strings.VIEWS__ACTION_EMPTY.length)]}{" "}
+                        <span className="action-empty-cta" onClick={() => onViewChange?.("editor")}>
+                            {strings.VIEWS__ACTION_EMPTY_CTA}
+                        </span>.
                     </div>
                 )}
 

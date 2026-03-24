@@ -275,6 +275,22 @@
     display: none !important;
 }
 
+.action-empty {
+    font-size: 14px;
+    color: var(--gray-3);
+    margin-left: 65px;
+    margin-top: 2em;
+}
+
+.action-empty-cta {
+    color: var(--blue);
+    cursor: pointer;
+}
+
+.action-empty-cta:hover {
+    color: var(--fg);
+}
+
 .action-spacer {
     height: 60vh;
 }

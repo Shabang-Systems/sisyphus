@@ -216,7 +216,7 @@ function AppInner() {
                     <Sidebar activeView={activeView} onViewChange={setActiveView} />
                     <SyncButton />
                     <LoadingOverlay />
-                    {activeView === "action" && <Action onJumpToTask={jumpToTask} triggerRebalance={triggerRebalance} />}
+                    {activeView === "action" && <Action onJumpToTask={jumpToTask} triggerRebalance={triggerRebalance} onViewChange={setActiveView} />}
                     {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} replyToTaskId={replyToTaskId} onJumpHandled={() => { setJumpToTaskId(null); setReplyToTaskId(null); }} triggerRebalance={triggerRebalance} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                     {activeView === "completed" && <Completed />}
