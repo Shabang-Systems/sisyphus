@@ -35,6 +35,11 @@ pub async fn upsert(task: Task, state: tauri::State<'_, GlobalState>) -> Result<
 }
 
 #[tauri::command]
+pub async fn batch_upsert(tasks: Vec<Task>, state: tauri::State<'_, GlobalState>) -> Result<Vec<Task>, String> {
+    state.batch_upsert(&tasks).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn remove(id: String, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
     state.remove(&id).await.map_err(|e| e.to_string())
 }
@@ -270,16 +275,28 @@ pub async fn accept_task_schedule(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Return refreshed snapshot
-    state.snapshot().await.map_err(|e| e.to_string())
+    // Update cache and return only the changed task via upsert path
+    let task = {
+        let cache = state.task_cache.read().await;
+        cache.get(&id).cloned()
+    };
+    if let Some(mut t) = task {
+        t.schedule = Some(schedule);
+        t.locked = true;
+        state.upsert(&t).await.map_err(|e| e.to_string())
+    } else {
+        // Cache miss — fall back to full snapshot
+        state.snapshot().await.map_err(|e| e.to_string())
+    }
 }
 
 /// Insert a new task at a given position, shifting all tasks at or after that position.
 /// Atomic: runs shift + insert in one go.
+/// Returns only the inserted task (with computed fields) instead of a full snapshot.
 #[tauri::command]
 pub async fn insert_task_at(
     task: Task,
-    after_id: Option<String>, // insert after this task's position; if None, use task.position
+    after_id: Option<String>,
     state: tauri::State<'_, GlobalState>,
 ) -> Result<Vec<Task>, String> {
     let pool_guard = state.pool.read().await;
@@ -328,7 +345,21 @@ pub async fn insert_task_at(
     .await
     .map_err(|e| e.to_string())?;
 
-    state.snapshot().await.map_err(|e| e.to_string())
+    // Use upsert to add to cache and enrich (task already written to DB above)
+    // Re-read the inserted task to get its actual position
+    let mut inserted = task.clone();
+    inserted.position = insert_pos;
+    // Update positions in cache
+    {
+        let mut cache = state.task_cache.write().await;
+        for t in cache.values_mut() {
+            if t.position >= insert_pos {
+                t.position += 1;
+            }
+        }
+    }
+    // Use the regular upsert path for enrichment (the DB row already exists)
+    state.upsert(&inserted).await.map_err(|e| e.to_string())
 }
 
 /// Extracts the first tag from a JSON array string like `["tag1", "tag2"]`.

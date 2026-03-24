@@ -44,6 +44,23 @@ const upsert = createAsyncThunk('tasks/upsert', async (task) => {
     return changed; // array of tasks with updated computed fields
 });
 
+const batchUpsert = createAsyncThunk('tasks/batchUpsert', async (tasks) => {
+    const payloads = tasks.map(task => ({
+        ...task,
+        tags: task.tags ?? "[]",
+        parent_id: task.parent_id ?? null,
+        start_date: task.start_date ?? null,
+        due_date: task.due_date ?? null,
+        completed_at: task.completed_at ?? null,
+        rrule: task.rrule ?? null,
+        effort: task.effort ?? 0,
+        schedule: task.schedule ?? null,
+        locked: task.locked ?? false,
+    }));
+    const changed = await invoke('batch_upsert', { tasks: payloads });
+    return changed;
+});
+
 const remove = createAsyncThunk('tasks/remove', async (id) => {
     await invoke('remove', { id });
     return id;
@@ -100,9 +117,26 @@ const tasksSlice = createSlice({
                 state.searchResults = payload;
                 state.searchQuery = meta.arg;
             })
+            .addCase(batchUpsert.fulfilled, (state, { payload }) => {
+                for (const updated of payload) {
+                    const idx = state.db.findIndex(t => t.id === updated.id);
+                    if (idx >= 0) {
+                        state.db[idx] = { ...state.db[idx], ...updated };
+                    } else {
+                        state.db.push(updated);
+                    }
+                }
+            })
             .addCase(insertTaskAt.fulfilled, (state, { payload }) => {
-                // Full snapshot returned — replace db
-                state.db = payload;
+                // Now returns only the inserted task(s) with computed fields
+                for (const updated of payload) {
+                    const idx = state.db.findIndex(t => t.id === updated.id);
+                    if (idx >= 0) {
+                        state.db[idx] = { ...state.db[idx], ...updated };
+                    } else {
+                        state.db.push(updated);
+                    }
+                }
             })
             .addCase(upsert.rejected, (_, { error }) => console.error("upsert failed:", error))
             .addCase(remove.rejected, (_, { error }) => console.error("remove failed:", error))
@@ -110,5 +144,5 @@ const tasksSlice = createSlice({
     },
 });
 
-export { createTask, upsert, remove, setParent, search, reorder, insertTaskAt };
+export { createTask, upsert, batchUpsert, remove, setParent, search, reorder, insertTaskAt };
 export default tasksSlice.reducer;

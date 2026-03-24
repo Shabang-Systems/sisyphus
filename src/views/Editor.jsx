@@ -11,7 +11,7 @@ import { RRule } from "rrule";
 import moment from "moment";
 import { snapshot } from "@api/utils.js";
 import { tick } from "@api/ui.js";
-import { upsert, remove, setParent, search, insertTaskAt } from "@api/tasks.js";
+import { upsert, batchUpsert, remove, setParent, search, insertTaskAt } from "@api/tasks.js";
 import { v4 as uuid } from "uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { Tag, extractTags } from "@components/TagExtension.js";
@@ -178,7 +178,9 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const tasks = taskList || allTasks; // what's in the doc
     const loading = useSelector(state => state.tasks.loading);
     const clock = useSelector(state => state.ui.clock);
-    const tasksForStyles = allTasks; // always use full Redux store for styles/completion
+    // Only generate CSS rules for tasks with DOM nodes (visible ref) — O(visible) instead of O(all)
+    const styleCacheRef = useRef(new Map()); // taskId → CSS rules string
+    const [visibleVersion, setVisibleVersion] = useState(0); // bumped when visible ref changes, triggers style regen
 
     // Tick every 5 seconds — only updates ui.clock, doesn't touch editor/modals
     useEffect(() => {
@@ -300,6 +302,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             dedup(fresh);
             const ts2 = now();
             const taskMap = new Map(tasksRef.current.map(t => [t.id, t]));
+            const batch = [];
             for (const row of fresh) {
                 if (!row.taskId) continue;
                 const prev = visible.current.get(row.taskId);
@@ -309,7 +312,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 if (prev.content !== row.content || posChanged) {
                     // Preserve scheduling fields from Redux
                     const existing = taskMap.get(row.taskId);
-                    dispatch(upsert({
+                    batch.push({
                         id: row.taskId, content: row.content,
                         position: taskList ? (existing?.position ?? row.position) : row.position,
                         tags: row.tags, created_at: prev.created_at, updated_at: ts2,
@@ -319,9 +322,14 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                         effort: existing?.effort,
                         schedule: existing?.schedule,
                         locked: existing?.locked,
-                    }));
+                    });
                     visible.current.set(row.taskId, { content: row.content, position: row.position, created_at: prev.created_at });
                 }
+            }
+            if (batch.length === 1) {
+                dispatch(upsert(batch[0]));
+            } else if (batch.length > 1) {
+                dispatch(batchUpsert(batch));
             }
         }, 300);
     }, [dispatch]);
@@ -338,71 +346,85 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             document.head.appendChild(style);
         }
 
+        // Only generate rules for tasks currently in the DOM (visible ref)
+        const visibleIds = visible.current;
+        const taskMap = new Map(allTasks.map(t => [t.id, t]));
         const nowDate = new Date();
-        const rules = [];
+        const cache = styleCacheRef.current;
 
-        for (const task of tasksForStyles) {
+        // Build a key to detect if we need to regenerate: visible IDs + clock
+        // For incremental updates, we regenerate per-task rules only for changed tasks
+        const newCache = new Map();
+
+        for (const [taskId] of visibleIds) {
+            const task = taskMap.get(taskId);
+            if (!task) continue;
+
             const sel = `.task-block[data-task-id="${task.id}"]`;
             const effectiveDue = task.effective_due ? new Date(task.effective_due) : null;
+            const taskRules = [];
 
             if (task.completed_at) {
-                rules.push(`${sel} .task-row p { text-decoration: line-through; opacity: 0.4; }`);
-                rules.push(`${sel} .task-check { color: var(--green) !important; }`);
+                taskRules.push(`${sel} .task-row p { text-decoration: line-through; opacity: 0.4; }`);
+                taskRules.push(`${sel} .task-check { color: var(--green) !important; }`);
             } else if (task.is_deferred) {
-                rules.push(`${sel} .task-row p { opacity: 0.3; }`);
+                taskRules.push(`${sel} .task-row p { opacity: 0.3; }`);
             } else if (effectiveDue) {
                 const hoursLeft = (effectiveDue - nowDate) / 3600000;
                 if (hoursLeft < 0) {
-                    rules.push(`${sel} .task-row p { color: var(--red); }`);
+                    taskRules.push(`${sel} .task-row p { color: var(--red); }`);
                 } else if (hoursLeft < 24) {
-                    rules.push(`${sel} .task-row p { color: var(--orange); }`);
+                    taskRules.push(`${sel} .task-row p { color: var(--orange); }`);
                 }
             }
 
-            // Tint active toolbar buttons
-            if (task.start_date) rules.push(`${sel} .task-start-btn { color: var(--blue) !important; }`);
-            if (task.due_date) rules.push(`${sel} .task-due-btn { color: var(--orange) !important; }`);
-            if (task.rrule) rules.push(`${sel} .task-rrule-btn { color: var(--blue) !important; }`);
-            if (task.schedule) rules.push(`${sel} .task-schedule-btn { color: var(--blue) !important; }`);
+            if (task.start_date) taskRules.push(`${sel} .task-start-btn { color: var(--blue) !important; }`);
+            if (task.due_date) taskRules.push(`${sel} .task-due-btn { color: var(--orange) !important; }`);
+            if (task.rrule) taskRules.push(`${sel} .task-rrule-btn { color: var(--blue) !important; }`);
+            if (task.schedule) taskRules.push(`${sel} .task-schedule-btn { color: var(--blue) !important; }`);
             if (task.locked) {
-                rules.push(`${sel} .task-lock-btn { color: var(--blue) !important; }`);
-                rules.push(`${sel} .task-lock-btn i { --fa-primary: ""; }`);
+                taskRules.push(`${sel} .task-lock-btn { color: var(--blue) !important; }`);
+                taskRules.push(`${sel} .task-lock-btn i { --fa-primary: ""; }`);
             }
 
-            // Effort sizing
             const effortLabels = ["", "XS", "S", "M", "L", "XL"];
             const effort = task.effort || 0;
             if (effort > 0) {
-                rules.push(`${sel} .task-effort-btn i { display: none; }`);
-                rules.push(`${sel} .task-effort-btn::after { content: "${effortLabels[effort]}"; font-size: 9px; font-weight: 600; }`);
+                taskRules.push(`${sel} .task-effort-btn i { display: none; }`);
+                taskRules.push(`${sel} .task-effort-btn::after { content: "${effortLabels[effort]}"; font-size: 9px; font-weight: 600; }`);
             }
             if (effort === 3) {
-                rules.push(`${sel} .task-row p { background: rgba(47, 51, 56, 0.03); }`);
+                taskRules.push(`${sel} .task-row p { background: rgba(47, 51, 56, 0.03); }`);
             } else if (effort === 4) {
-                rules.push(`${sel} .task-row p { background: rgba(47, 51, 56, 0.06); }`);
+                taskRules.push(`${sel} .task-row p { background: rgba(47, 51, 56, 0.06); }`);
             } else if (effort === 5) {
-                rules.push(`${sel} .task-row p { font-weight: 500; background: rgba(47, 51, 56, 0.08); }`);
+                taskRules.push(`${sel} .task-row p { font-weight: 500; background: rgba(47, 51, 56, 0.08); }`);
             }
 
-            // Due date label — show effective due (earliest in chain)
             if (effectiveDue && !task.completed_at) {
                 const due = moment(effectiveDue);
                 const daysAway = due.diff(moment(), "days", true);
                 let dueLabel;
-                if (daysAway < -1) dueLabel = due.fromNow();                  // "2 days ago"
+                if (daysAway < -1) dueLabel = due.fromNow();
                 else if (daysAway < 0) dueLabel = "overdue";
-                else if (daysAway < 1) dueLabel = due.fromNow();              // "in 3 hours"
-                else if (daysAway < 7) dueLabel = due.format("dddd, h:mm a");       // "Saturday, 3:00 pm"
-                else dueLabel = due.format("dddd, MMMM D, h:mm a");                 // "Friday, May 22, 3:00 pm"
+                else if (daysAway < 1) dueLabel = due.fromNow();
+                else if (daysAway < 7) dueLabel = due.format("dddd, h:mm a");
+                else dueLabel = due.format("dddd, MMMM D, h:mm a");
                 const escaped = dueLabel.replace(/"/g, '\\"');
-                rules.push(`${sel} .task-row p::after { content: "${escaped}"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--gray-3); pointer-events: none; white-space: nowrap; }`);
-                rules.push(`${sel}:hover .task-row p::after { display: none; }`);
+                taskRules.push(`${sel} .task-row p::after { content: "${escaped}"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--gray-3); pointer-events: none; white-space: nowrap; }`);
+                taskRules.push(`${sel}:hover .task-row p::after { display: none; }`);
             }
+
+            newCache.set(taskId, taskRules.join("\n"));
         }
 
-        style.textContent = rules.join("\n");
-        return () => { style.textContent = ""; };
-    }, [tasksForStyles, clock]);
+        styleCacheRef.current = newCache;
+        const allRules = [...newCache.values()].join("\n");
+        style.textContent = allRules;
+        // No cleanup: don't clear style.textContent between re-renders — that causes a flash
+        // where ::after labels disappear and task heights shift, breaking scroll position.
+        // The next render will overwrite the content anyway.
+    }, [allTasks, clock, visibleVersion]);
 
     // Search filter styles removed — browse mode passes filtered taskList directly.
 
@@ -742,12 +764,20 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         });
 
         visible.current = map;
+        setVisibleVersion(v => v + 1); // trigger style regeneration
         suppress.current = true;
         editor.commands.setContent({ type: "doc", content: content.length ? content : [{ type: "paragraph" }] });
-        setTimeout(() => {
-            suppress.current = false;
-            if (!isBrowse && !taskList) editor.commands.focus("end");
-        }, 0);
+        suppress.current = false;
+        if (!isBrowse && !taskList) {
+            // Planning mode: cursor at end, last task centered in viewport.
+            editor.commands.focus("end");
+            const container = document.querySelector(".editor-content");
+            if (container) {
+                // scrollHeight includes 70vh bottom padding, so scrolling to max
+                // puts the last task roughly centered.
+                container.scrollTop = container.scrollHeight;
+            }
+        }
     }, [editor, isBrowse]);
 
     // Initial hydration (planning mode — exclude completed tasks)
@@ -823,6 +853,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 editor.view.dispatch(tr);
                 guard.current = false;
 
+                setVisibleVersion(v => v + 1);
                 requestAnimationFrame(() => {
                     suppress.current = false;
                     isLoadingMore.current = false;
@@ -838,7 +869,10 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
                 loadedCountRef.current += batch.length;
                 isLoadingMore.current = true;
-                const scrollHeight = container.scrollHeight;
+
+                // Find anchor element: first visible task-block for scroll restoration
+                const anchorEl = container.querySelector(".task-block[data-task-id]");
+                const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
 
                 const newContent = batch.map(t => {
                     visible.current.set(t.id, { content: t.content, position: 0, created_at: t.created_at });
@@ -859,9 +893,14 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 editor.view.dispatch(tr);
                 guard.current = false;
 
+                // Restore scroll position synchronously using anchor element
+                if (anchorEl && anchorTop !== null) {
+                    const newAnchorTop = anchorEl.getBoundingClientRect().top;
+                    container.scrollTop += (newAnchorTop - anchorTop);
+                }
+
+                setVisibleVersion(v => v + 1);
                 requestAnimationFrame(() => {
-                    const newScrollHeight = container.scrollHeight;
-                    container.scrollTop = newScrollHeight - scrollHeight;
                     suppress.current = false;
                     isLoadingMore.current = false;
                 });

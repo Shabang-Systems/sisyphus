@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useSelector } from "react-redux";
 import "./ReplyArrows.css";
 
@@ -9,6 +9,9 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
     const [svgHeight, setSvgHeight] = useState(0);
     // Shadow state: taskId → { y, visible }
     const positionMap = useRef(new Map());
+    const rafPending = useRef(false);
+
+    const taskMap = useMemo(() => new Map(tasks.map(t => [t.id, t])), [tasks]);
 
     const updatePositions = useCallback(() => {
         if (!editorRef) return;
@@ -42,16 +45,16 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
         const rightEdge = container ? container.clientWidth - 20 : 300;
 
         const result = [];
-        for (const child of tasks) {
-            if (!child.parent_id) continue;
-            const parentY = map.get(child.parent_id);
-            const childY = map.get(child.id);
-            if (parentY == null || childY == null) continue;
+        for (const [id, childY] of map) {
+            const task = taskMap.get(id);
+            if (!task || !task.parent_id) continue;
+            const parentY = map.get(task.parent_id);
+            if (parentY == null) continue;
 
             result.push({
-                key: `${child.parent_id}-${child.id}`,
-                parentId: child.parent_id,
-                childId: child.id,
+                key: `${task.parent_id}-${id}`,
+                parentId: task.parent_id,
+                childId: id,
                 parentY,
                 childY,
                 rightEdge,
@@ -59,7 +62,7 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
         }
 
         setArrows(result);
-    }, [tasks]);
+    }, [taskMap]);
 
     // Update shadow positions + rebuild arrows
     const refresh = useCallback(() => {
@@ -85,7 +88,12 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
     useEffect(() => {
         if (!editorRef) return;
         const observer = new MutationObserver(() => {
-            requestAnimationFrame(refresh);
+            if (rafPending.current) return;
+            rafPending.current = true;
+            requestAnimationFrame(() => {
+                refresh();
+                rafPending.current = false;
+            });
         });
         observer.observe(editorRef, {
             childList: true, subtree: true,

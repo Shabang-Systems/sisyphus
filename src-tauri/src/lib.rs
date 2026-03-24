@@ -21,6 +21,7 @@ pub fn run() {
             commands::snapshot,
             commands::create_task,
             commands::upsert,
+            commands::batch_upsert,
             commands::remove,
             commands::set_parent,
             commands::list_sheets,

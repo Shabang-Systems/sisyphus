@@ -36,7 +36,10 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
     const [dropTarget, setDropTarget] = useState(null);
     const dropTargetRef = useRef(null);
 
-    useEffect(() => { dispatch(snapshot()); }, [dispatch]);
+    // Snapshot is already dispatched by the main Editor on mount and after schedule computation.
+    // Only dispatch here if Redux is still in loading state (i.e., Action is the first view).
+    const loading = useSelector(state => state.tasks.loading);
+    useEffect(() => { if (loading) dispatch(snapshot()); }, [loading, dispatch]);
 
     // Drag to reschedule
     const handleTaskDrag = useCallback((taskId, e) => {
@@ -93,10 +96,14 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
         };
     }, [dragState, dispatch]);
 
-    // Group scheduled tasks by (dayDiff, chunkIdx)
+    // Group scheduled tasks by (dayDiff, chunkIdx).
+    // Stabilize task list references: only produce new arrays when membership or order changes,
+    // not on every Redux content update. This prevents Editor re-hydration churn.
+    const prevChunkTasksRef = useRef(new Map()); // key → task id string for equality check
+    const prevChunkArraysRef = useRef(new Map()); // key → task array (stable reference)
+
     const groups = useMemo(() => {
         const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-        const textRe = /"text"\s*:\s*"([^"]+)"/;
         const result = new Map(); // key: "day:chunk"
         const daySet = new Set();
 
@@ -116,12 +123,28 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
             daySet.add(dayDiff);
         }
 
-        // Sort tasks within each chunk by position (list order from planning view)
+        // Sort tasks within each chunk by position
         for (const g of result.values()) {
             g.tasks.sort((a, b) => a.position - b.position);
         }
 
-        // Build ordered list of (day header, section label, chunk group)
+        // Stabilize: reuse previous task array reference if membership hasn't changed
+        const newIdMap = new Map();
+        const newArrayMap = new Map();
+        for (const [key, g] of result) {
+            const idStr = g.tasks.map(t => t.id).join(",");
+            newIdMap.set(key, idStr);
+            if (prevChunkTasksRef.current.get(key) === idStr) {
+                // Membership unchanged — reuse old array to keep referential equality
+                newArrayMap.set(key, prevChunkArraysRef.current.get(key));
+            } else {
+                newArrayMap.set(key, g.tasks);
+            }
+        }
+        prevChunkTasksRef.current = newIdMap;
+        prevChunkArraysRef.current = newArrayMap;
+
+        // Build ordered list
         const days = [...daySet].sort((a, b) => a - b);
         const ordered = [];
         for (const day of days) {
@@ -130,30 +153,40 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
                 .filter(g => g.dayDiff === day)
                 .sort((a, b) => a.chunkIdx - b.chunkIdx);
             for (const dc of dayChunks) {
+                const key = `${dc.dayDiff}:${dc.chunkIdx}`;
                 ordered.push({
                     type: "chunk",
                     dayDiff: day,
                     chunkIdx: dc.chunkIdx,
                     label: CHUNK_LABELS[dc.chunkIdx] || "",
-                    tasks: dc.tasks,
+                    tasks: newArrayMap.get(key) || dc.tasks,
                 });
             }
         }
         return ordered;
     }, [allTasks]);
 
-    // Parked tasks: no schedule, not completed, not deferred, has content
+    // Parked tasks: no schedule, not completed, not deferred, has content.
+    // Stabilize reference — only produce new array when membership changes.
+    const prevParkedIdsRef = useRef("");
+    const prevParkedRef = useRef([]);
     const parkedTasks = useMemo(() => {
         const textRe = /"text"\s*:\s*"[^"]+"/;
-        return allTasks.filter(t =>
+        const result = allTasks.filter(t =>
             !t.schedule && !t.completed_at && !t.is_deferred && textRe.test(t.content)
         );
+        const idStr = result.map(t => t.id).join(",");
+        if (idStr === prevParkedIdsRef.current) return prevParkedRef.current;
+        prevParkedIdsRef.current = idStr;
+        prevParkedRef.current = result;
+        return result;
     }, [allTasks]);
 
-    // Foveated rendering: render groups until we hit TASK_BUDGET tasks, load more on scroll
-    const TASK_BUDGET = 30;
+    // Foveated rendering: render groups until we hit TASK_BUDGET tasks, load more on scroll.
+    // Budget is a high-water mark — never shrinks, only grows. Prevents unmount/remount churn.
+    const TASK_BUDGET = 50;
+    const taskBudgetRef = useRef(TASK_BUDGET);
     const [taskBudget, setTaskBudget] = useState(TASK_BUDGET);
-    useEffect(() => { setTaskBudget(TASK_BUDGET); }, [groups]);
 
     const renderedGroups = useMemo(() => {
         let count = 0;
@@ -168,15 +201,20 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
         return result;
     }, [groups, taskBudget]);
 
+    const totalTasks = useMemo(() =>
+        groups.reduce((s, g) => s + (g.type === "chunk" ? g.tasks.length : 0), 0),
+    [groups]);
+
     const onScroll = useCallback((e) => {
         const el = e.target;
-        if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
-            setTaskBudget(prev => {
-                const total = groups.reduce((s, g) => s + (g.type === "chunk" ? g.tasks.length : 0), 0);
-                return Math.min(prev + TASK_BUDGET, total);
-            });
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) {
+            const newBudget = Math.min(taskBudgetRef.current + TASK_BUDGET, totalTasks);
+            if (newBudget > taskBudgetRef.current) {
+                taskBudgetRef.current = newBudget;
+                setTaskBudget(newBudget);
+            }
         }
-    }, [groups]);
+    }, [totalTasks]);
 
     return (
         <div className="action" onScroll={onScroll}>

@@ -3,6 +3,7 @@
     width: 100%;
     padding-top: 48px; /* space for title bar */
     overflow-y: auto;
+    overflow-anchor: auto;
 }
 
 .action-main {
