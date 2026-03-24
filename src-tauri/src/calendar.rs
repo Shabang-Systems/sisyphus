@@ -23,7 +23,9 @@ pub async fn fetch_busy_blocks(urls: &[String]) -> Vec<BusyBlock> {
         let url = url.trim();
         if url.is_empty() { continue; }
 
-        let body = match client.get(url).send().await {
+        let body = match client.get(url)
+            .header("Cache-Control", "no-cache")
+            .send().await {
             Ok(resp) => match resp.text().await {
                 Ok(t) => t,
                 Err(e) => { eprintln!("[CAL] Failed to read body from {}: {}", url, e); continue; }

@@ -165,6 +165,8 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         const interval = setInterval(() => dispatch(tick()), 5000);
         return () => clearInterval(interval);
     }, [dispatch]);
+
+
     const [collapsedRoot, setCollapsedRoot] = useState(null);
     const [dateModal, setDateModal] = useState(null);   // { taskId, field }
     const [rruleModal, setRruleModal] = useState(null);  // { taskId }
@@ -834,7 +836,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             txSet(taskId, "schedule", val);
             txSet(taskId, "locked", !!date);
         } else {
-            dispatch(updateTask({ id: taskId, changes: { [field]: val, updated_at: now() } }));
+            const changes = { [field]: val, updated_at: now() };
+            if (field === "start_date") {
+                changes.is_deferred = val ? val > new Date().toISOString() : false;
+            }
+            dispatch(updateTask({ id: taskId, changes }));
             txSet(taskId, field, val);
         }
     }, [dispatch]);
