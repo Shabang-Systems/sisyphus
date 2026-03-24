@@ -182,39 +182,7 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
         return result;
     }, [allTasks]);
 
-    // Foveated rendering: render groups until we hit TASK_BUDGET tasks, load more on scroll.
-    // Budget is a high-water mark — never shrinks, only grows. Prevents unmount/remount churn.
-    const TASK_BUDGET = 50;
-    const taskBudgetRef = useRef(TASK_BUDGET);
-    const [taskBudget, setTaskBudget] = useState(TASK_BUDGET);
-
-    const renderedGroups = useMemo(() => {
-        let count = 0;
-        const result = [];
-        for (const item of groups) {
-            result.push(item);
-            if (item.type === "chunk") {
-                count += item.tasks.length;
-                if (count >= taskBudget) break;
-            }
-        }
-        return result;
-    }, [groups, taskBudget]);
-
-    const totalTasks = useMemo(() =>
-        groups.reduce((s, g) => s + (g.type === "chunk" ? g.tasks.length : 0), 0),
-    [groups]);
-
-    const onScroll = useCallback((e) => {
-        const el = e.target;
-        if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) {
-            const newBudget = Math.min(taskBudgetRef.current + TASK_BUDGET, totalTasks);
-            if (newBudget > taskBudgetRef.current) {
-                taskBudgetRef.current = newBudget;
-                setTaskBudget(newBudget);
-            }
-        }
-    }, [totalTasks]);
+    const onScroll = useCallback(() => {}, []);
 
     return (
         <div className="action" onScroll={onScroll}>
@@ -228,7 +196,7 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
                 {parkedTasks.length > 0 && (
                     <div className="action-parked">
                         <div className="action-parked-header">
-                            <span className="action-parked-label">unable to schedule</span>
+                            <span className="action-parked-label" data-tooltip-id="rootp" data-tooltip-content="Waiting for the scheduler, or no valid time slot found.">pending scheduling</span>
                         </div>
                         <div className="action-parked-editor">
                             <Editor
@@ -243,7 +211,7 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
                 )}
 
                 <div className="action-timeline">
-                    {renderedGroups.map((item, i) =>
+                    {groups.map((item, i) =>
                         item.type === "day" ? (
                             <div key={`day-${item.dayDiff}`} className="action-day-header">
                                 <span className="action-day-label">{item.label}</span>

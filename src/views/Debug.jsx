@@ -89,12 +89,10 @@ export default function Debug() {
                                 <div className="debug-explain-desc">Priority score for task <em>i</em> at chunk <em>c</em>. Higher = more valuable to schedule here.</div>
                             </div>
                             <div className="debug-explain-row">
-                                <div className="debug-explain-formula">r<sub>i</sub>(c) = α<sub>k</sub> × (pressure × T + earliness)</div>
+                                <div className="debug-explain-formula">r<sub>i</sub>(c) = α<sub>k</sub> × T / max(t<sub>f</sub> − c, 1)</div>
                                 <div className="debug-explain-desc">
-                                    Delay reward. <strong>pressure</strong> = w/window (tight deadline → high).
-                                    <strong>earliness</strong> = t<sub>f</sub> − c (prefer earlier chunks).
+                                    Delay reward (1/slack). Blows up near deadline: due in 2 chunks → r = 42, due in 80 → r ≈ 1. Capped at <strong>T</strong> = {schedule.horizon_days * schedule.chunks_per_day}.
                                     <strong>α<sub>k</sub></strong> = tag urgency weight.
-                                    <strong>T</strong> = {schedule.horizon_days * schedule.chunks_per_day} total chunks.
                                 </div>
                             </div>
                             <div className="debug-explain-row">
@@ -111,7 +109,7 @@ export default function Debug() {
                             </div>
                             <div className="debug-explain-row">
                                 <div className="debug-explain-formula">Greedy packing</div>
-                                <div className="debug-explain-desc">Sort all (task, chunk) pairs by Λ descending. Greedily assign slots until each task's work requirement is met or capacity runs out. Tasks with Λ ≤ 0 everywhere are parked.</div>
+                                <div className="debug-explain-desc">Sort all (task, chunk) pairs by Λ descending. <strong>Pass 1</strong>: assign respecting both physical capacity and tag energy budgets. <strong>Pass 2</strong>: re-iterate same Λ order, energy-ignored, for spillover. Tasks with zero allocation are parked.</div>
                             </div>
                         </div>
                         <div className="debug-explain-stats">
@@ -120,6 +118,88 @@ export default function Debug() {
                             <span>Allocations: <strong>{schedule.allocations.length}</strong> chunks used</span>
                         </div>
                     </section>
+
+                    {/* ── Dirichlet Energy Model ── */}
+                    {schedule.tag_set?.length > 0 && (() => {
+                        const startH = schedule.start_h || 0;
+                        const remainToday = 6 - startH;
+                        const toChunk = (dayIdx, hIdx) => {
+                            if (dayIdx === 0) return hIdx - startH;
+                            return remainToday + (dayIdx - 1) * 6 + hIdx;
+                        };
+                        const dayLabel = (dayIdx) => {
+                            const d = new Date(horizonStart);
+                            d.setDate(d.getDate() + dayIdx);
+                            return `${DOW_LABELS[(d.getDay() + 6) % 7]} ${d.getMonth()+1}/${d.getDate()}`;
+                        };
+                        const renderGrid = (data, fmt, colorFn) => (
+                            <div className="debug-energy-grid">
+                                <div className="debug-energy-grid-header">
+                                    <div className="debug-energy-grid-corner" />
+                                    {CHUNK_HOURS.map((h, i) => <div key={i} className="debug-energy-grid-col">{h}</div>)}
+                                </div>
+                                {[...Array(schedule.horizon_days)].map((_, dayIdx) => (
+                                    <div key={dayIdx} className="debug-energy-grid-row">
+                                        <div className="debug-energy-grid-row-label">{dayLabel(dayIdx)}</div>
+                                        {CHUNK_HOURS.map((_, hIdx) => {
+                                            const ci = toChunk(dayIdx, hIdx);
+                                            if (ci < 0) return <div key={hIdx} className="debug-energy-grid-cell past" />;
+                                            const val = ci < data.length ? data[ci] : 0;
+                                            const bg = colorFn ? colorFn(val, ci) : undefined;
+                                            return (
+                                                <div key={hIdx} className="debug-energy-grid-cell" style={bg ? { background: bg } : undefined}>
+                                                    {val > 0.001 ? fmt(val) : ""}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ))}
+                            </div>
+                        );
+
+                        return (
+                            <section className="debug-section">
+                                <h3>Dirichlet Energy Model</h3>
+
+                                <div className="debug-energy-tag">
+                                    <div className="debug-energy-tag-label">C(c) — physical capacity (slots)</div>
+                                    {renderGrid(
+                                        schedule.chunk_caps || [],
+                                        v => v.toFixed(1),
+                                        v => v > 0.01 ? `rgba(100, 100, 100, ${0.05 + Math.min(v / 8, 1) * 0.15})` : undefined
+                                    )}
+                                </div>
+
+                                {schedule.tag_set.map((tag, k) => {
+                                    const xi = schedule.dirichlet_xi?.[k] || [];
+                                    const mean = schedule.dirichlet_mean?.[k] || [];
+                                    const caps = schedule.energy_caps[k] || [];
+                                    return (
+                                        <div key={tag} className="debug-energy-tag">
+                                            <div className="debug-energy-tag-label">@{tag}</div>
+
+                                            <div className="debug-energy-sub-label">ξ (concentration parameter)</div>
+                                            {renderGrid(xi, v => v.toFixed(2), (v) =>
+                                                v > 0.01 ? `rgba(242, 114, 0, ${0.06 + Math.min(v / 10, 1) * 0.25})` : undefined
+                                            )}
+
+                                            <div className="debug-energy-sub-label">E[θ] = ξ / Σξ (posterior mean)</div>
+                                            {renderGrid(mean, v => (v * 100).toFixed(0) + "%", (v) =>
+                                                v > 0.001 ? `rgba(38, 166, 113, ${0.06 + v * 0.4})` : undefined
+                                            )}
+
+                                            <div className="debug-energy-sub-label">C<sub>k</sub>(c) = E[θ] × C(c) (energy cap, slots)</div>
+                                            {renderGrid(caps, v => v.toFixed(1), (v, ci) => {
+                                                const phys = ci < (schedule.chunk_caps?.length || 0) ? schedule.chunk_caps[ci] : 0;
+                                                const frac = phys > 0 ? v / phys : 0;
+                                                return v > 0.01 ? `rgba(55, 165, 190, ${0.08 + frac * 0.35})` : undefined;
+                                            })}
+                                        </div>
+                                    );
+                                })}
+                            </section>
+                        );
+                    })()}
 
                     {/* ── Per-Task Formula Values ── */}
                     <section className="debug-section">
@@ -350,12 +430,69 @@ export default function Debug() {
                             }
                             lines.push("");
 
+                            // Dirichlet energy model
+                            if (s.tag_set?.length > 0) {
+                                lines.push("══════════════════════════════════════════════════════════════════════════════════");
+                                lines.push("  DIRICHLET ENERGY MODEL");
+                                lines.push("══════════════════════════════════════════════════════════════════════════════════");
+                                const startH = s.start_h || 0;
+                                const remToday = 6 - startH;
+                                const colHead = CHUNK_HOURS.map(h => rpad(h, 8)).join("");
+                                const toCI = (d, hIdx) => {
+                                    if (d === 0) return hIdx - startH;
+                                    return remToday + (d - 1) * 6 + hIdx;
+                                };
+                                const dayLbl = (d) => {
+                                    const dd = new Date(horizonStart);
+                                    dd.setDate(dd.getDate() + d);
+                                    const dow = DOW_LABELS[(dd.getDay() + 6) % 7];
+                                    return `${dow} ${dd.getMonth()+1}/${dd.getDate()}`;
+                                };
+                                const dumpGrid = (arr, fmt) => {
+                                    lines.push(`  ${pad("", 14)} ${colHead}`);
+                                    lines.push(`  ${pad("", 14)} ${"─".repeat(48)}`);
+                                    for (let d = 0; d < s.horizon_days; d++) {
+                                        const vals = CHUNK_HOURS.map((_, hIdx) => {
+                                            const ci = toCI(d, hIdx);
+                                            if (ci < 0) return "   —   ";
+                                            const v = ci >= 0 && ci < arr.length ? arr[ci] : 0;
+                                            return rpad(v > 0.001 ? fmt(v) : "—", 8);
+                                        }).join("");
+                                        lines.push(`  ${pad(dayLbl(d), 14)} ${vals}`);
+                                    }
+                                };
+
+                                // Physical capacity
+                                lines.push("");
+                                lines.push("  C(c) — physical capacity (slots):");
+                                dumpGrid(s.chunk_caps || [], v => v.toFixed(1));
+
+                                for (let k = 0; k < s.tag_set.length; k++) {
+                                    const tag = s.tag_set[k];
+                                    lines.push("");
+                                    lines.push(`  ┌─ @${tag} ──────────────────────────────────────`);
+
+                                    lines.push("  │  ξ (concentration parameter):");
+                                    dumpGrid(s.dirichlet_xi?.[k] || [], v => v.toFixed(2));
+
+                                    lines.push("  │");
+                                    lines.push("  │  E[θ] = ξ/Σξ (posterior mean):");
+                                    dumpGrid(s.dirichlet_mean?.[k] || [], v => (v * 100).toFixed(0) + "%");
+
+                                    lines.push("  │");
+                                    lines.push("  │  C_k(c) = E[θ] × C(c) (energy cap, slots):");
+                                    dumpGrid(s.energy_caps[k] || [], v => v.toFixed(2));
+
+                                    lines.push(`  └────────────────────────────────────────────────────────────`);
+                                }
+                                lines.push("");
+                            }
+
                             // Task diagnostics — full formula breakdown
                             lines.push("══════════════════════════════════════════════════════════════════════════════════");
                             lines.push("  TASK DIAGNOSTICS");
                             lines.push("  Formula: Λ_{ic} = r_i(c) + ν_i − μ_c − η_{kc}");
-                            lines.push("  where   r_i(c) = α_k × (pressure × T + earliness)");
-                            lines.push("          pressure = w / window,  earliness = t_f − c");
+                            lines.push("  where   r_i(c) = α_k × T / max(t_f − c, 1)");
                             lines.push("══════════════════════════════════════════════════════════════════════════════════");
 
                             // Sort: allocated desc, then by name

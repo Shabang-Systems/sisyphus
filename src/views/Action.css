@@ -36,6 +36,14 @@
     position: relative;
 }
 
+.action-skeleton-wrap {
+    padding: 4px 0 4px 60px;
+}
+
+.action-skeleton-task {
+    padding: 5px 0;
+}
+
 .action-section-row {
     height: 0;
 }
@@ -73,7 +81,6 @@
     min-height: auto !important;
     max-height: none !important;
     overflow: visible !important;
-    cursor: default;
 }
 
 .action-editor-wrap .ProseMirror {
@@ -170,6 +177,7 @@
 .action-parked {
     margin-left: 65px;
     margin-bottom: 16px;
+    padding-top: 16px;
 }
 
 .action-parked-header {
@@ -178,8 +186,9 @@
 
 .action-parked-label {
     font-size: 11px;
-    color: var(--red);
+    color: var(--gray-3);
     font-weight: 500;
+    cursor: default;
 }
 
 .action-parked-editor {

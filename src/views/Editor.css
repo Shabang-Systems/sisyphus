@@ -106,6 +106,10 @@
     background: transparent !important;
 }
 
+.task-block:hover {
+    background: var(--bg);
+}
+
 /* Task row: wrapper that controls checkmark visibility on hover */
 .task-row {
     display: flex;
@@ -203,7 +207,8 @@
     pointer-events: none;
 }
 
-.task-row:hover .task-toolbar {
+.task-row:hover .task-toolbar,
+.task-block:hover .task-toolbar {
     opacity: 1;
     pointer-events: auto;
 }
@@ -225,6 +230,27 @@
 
 .task-effort-btn i {
     font-size: 6px;
+}
+
+.task-effort-label {
+    font-size: 9px;
+    font-weight: 600;
+}
+
+.task-due-label {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    color: var(--gray-3);
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.task-row:hover .task-due-label,
+.task-block:hover .task-due-label {
+    display: none;
 }
 
 .task-sidebar-btn.is-collapsed {

@@ -1,47 +1,38 @@
-//! # Convex Task Scheduling via Quadratic Programming
+//! # Convex Task Scheduling: Urgency-Driven QP + Greedy Packing
 //!
-//! This module implements a convex QP-based task scheduler that assigns time slots
-//! to tasks across a multi-day planning horizon. The formulation follows the model
-//! described in `convex_task_scheduling.md`.
+//! Two-phase scheduling: a convex QP produces dual variables that encode task
+//! urgency, then a greedy packer assigns whole tasks to chunks using those duals
+//! as priority scores. See `misc/convex_task_scheduling_v2.md` for the full spec.
 //!
 //! ## Units
 //!
 //! - **Slot**: 30 minutes of work. Tasks are measured in slots (1 slot = 30 min).
-//! - **Chunk**: 4 hours of wall time. Each chunk holds up to 8 slots. The solver
-//!   distributes slots across tasks within chunks; the user decides which 30-minute
-//!   intervals to use.
+//! - **Chunk**: 4 hours of wall time. Each chunk holds up to 8 slots.
 //!
 //! ## Decision Variables
 //!
 //! - `x_{ic}` ∈ [0, 8]: slots of work on task `i` in chunk `c`.
-//! - `z_{id}` ∈ [0, 8]: activation level for task `i` on day `d`. A modeling device
-//!   that limits how many tasks appear on each day's schedule.
 //!
 //! ## Objective (minimized)
 //!
 //! ```text
-//! Σ_i Σ_c [ β_{k_i} · x_{ic}²  −  r_i(c) · x_{ic} ]  +  γ · Σ_i Σ_d z_{id}
+//! Σ_i Σ_c [ ε · x_{ic}²  −  r_i(c) · x_{ic} ]
 //! ```
 //!
-//! - **β · x²**: Concentration cost. Penalizes packing work into dense chunks.
-//!   Low β (deep work) → dense blocks. High β (aversive tasks) → thin spreading.
-//! - **−r(c) · x**: Delay reward. Each slot earns credit `r_i(c) = α_{k_i} · (t_f − c)⁺`.
-//!   Earlier work earns more credit because it eliminates more future carrying cost.
-//! - **γ · z**: Focus penalty. Each task activated on each day costs γ, forcing
-//!   the solver to concentrate the daily plan on fewer tasks.
+//! - **ε · x²**: Regularizer (ε = 10⁻⁶) for strict convexity → unique duals.
+//! - **−r(c) · x**: Urgency reward. `r_i(c) = α_k · T / max(tᶠ − c, 1)`.
+//!   Inversely proportional to remaining slack. Blows up near deadline (capped at T).
+//!
+//! The primal is discarded. Only duals matter.
 //!
 //! ## Constraints
 //!
 //! - **(C1)** Chunk capacity: `Σ_i x_{ic} ≤ C(c)`.
 //! - **(C2)** Energy by tag: `Σ_{i: k_i=k} x_{ic} ≤ C_k(c)` (Dirichlet-learned).
-//! - **(C3)** Work completion: `Σ_c x_{ic} ≥ w_i`.
-//! - **(C4)** Feasibility window: `x_{ic} = 0` for `c ∉ [t_s, t_f]` (not instantiated).
-//! - **(C5)** Precedence: `(1/w_j) Σ_{τ≤c} x_{jτ} ≤ (1/w_i) Σ_{τ≤c} x_{iτ}`.
-//!   Convex relaxation of hard precedence — task j cannot outpace task i.
-//! - **(C6)** Activation coupling: `x_{ic} ≤ z_{id}` for `c ∈ day d`.
-//! - **(C7)** Bounds: `x ∈ [0,8]`, `z ∈ [0,8]`.
-//!
-//! The entire problem is a **convex QP**, solved by OSQP (Operator Splitting QP solver).
+//! - **(C3)** Work completion: `Σ_c x_{ic} = w_i`.
+//! - **(C4)** Feasibility window: vars not instantiated for `c ∉ [t_s, t_f]`.
+//! - **(C5)** Precedence: fractional completion of parent ≥ child at every chunk.
+//! - **(C6)** Bounds: `x ∈ [0, 8]`.
 //!
 //! ## Priority Score (from KKT conditions)
 //!
@@ -49,13 +40,13 @@
 //! Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c}
 //! ```
 //!
-//! - `r_i(c)`: delay credit (up when far from deadline, up when α high)
-//! - `ν_i`: completion pressure (up when task barely fits in its window)
-//! - `μ_c`: price of time at chunk c (down when chunk is contested)
-//! - `η_{k,c}`: price of tag-k energy at chunk c (down when energy scarce)
+//! ## Greedy Packing
 //!
-//! `Λ > 0` and `z > 0`: work assigned. `z = 0`: task doesn't make today's cut.
-//! `Λ ≤ 0` everywhere: task is optimally parked — every chunk is better spent elsewhere.
+//! **Pass 1** (energy-aware): sort by Λ descending, assign respecting both
+//! physical capacity and Dirichlet energy budgets.
+//!
+//! **Pass 2** (energy-ignored): remaining tasks placed in first available chunk
+//! with physical capacity, ignoring energy budgets.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -231,6 +222,18 @@ pub struct SchedulerOutput {
     pub raw_priorities: Vec<(String, usize, f64)>,
     /// Debug trace: greedy packing order — (step, task_name, chunk, slots_assigned).
     pub packing_trace: Vec<(usize, String, usize, f64)>,
+    /// Tag classes used in scheduling.
+    pub tag_set: Vec<String>,
+    /// Per-tag energy caps: `energy_caps[tag_index]` = Vec of capacity per chunk.
+    pub energy_caps: Vec<Vec<f64>>,
+    /// Physical capacity per chunk (after calendar/locked deductions).
+    pub chunk_caps: Vec<f64>,
+    /// Starting within-day chunk position (0–5).
+    pub start_h: usize,
+    /// Raw Dirichlet ξ values: `dirichlet_xi[tag_index][chunk]`.
+    pub dirichlet_xi: Vec<Vec<f64>>,
+    /// Dirichlet posterior mean (normalized): `dirichlet_mean[tag_index][chunk]`.
+    pub dirichlet_mean: Vec<Vec<f64>>,
 }
 
 /// Per-tag cost parameters. These control the solver's scheduling behavior:
@@ -275,6 +278,18 @@ impl SchedulerParams {
     }
 }
 
+/// Delay reward r_i(c) — single source of truth.
+///
+/// r_i(c) = α_k · T / max(tᶠ − c, 1)
+///
+/// Inversely proportional to remaining slack. A task due in 2 chunks gets
+/// r = 84/2 = 42. A no-deadline task (tᶠ = 83) at c = 0 gets r ≈ 1.
+/// The max(·, 1) caps the blowup — maximum r is T (84).
+fn delay_reward(alpha: f64, t_f: usize, c: usize) -> f64 {
+    let slack = (t_f as f64 - c as f64).max(1.0);
+    alpha * TOTAL_CHUNKS as f64 / slack
+}
+
 /// Returns the absolute wall-clock hour position (0–5) for a chunk index,
 /// given the starting offset `start_h`.
 ///
@@ -289,18 +304,12 @@ fn abs_hour_pos(chunk_index: usize, start_h: usize) -> usize {
     }
 }
 
-/// Returns the calendar capacity C(c) for a given chunk index.
+/// Returns the base capacity C(c) for a given chunk index.
 ///
-/// **Currently hardcoded to 9–5 availability:**
-/// - Hours 08:00–12:00 (h=2) and 12:00–16:00 (h=3): fully available (8 slots).
-/// - All other hours: 0 slots (unavailable).
-fn get_chunk_capacity(chunk_index: usize, start_h: usize) -> f64 {
-    let h = abs_hour_pos(chunk_index, start_h);
-    match h {
-        2 => SLOTS_PER_CHUNK, // 08:00–12:00
-        3 => SLOTS_PER_CHUNK, // 12:00–16:00
-        _ => 0.0,
-    }
+/// All chunks start at full capacity (8 slots). Calendar busy blocks and
+/// locked/completed tasks subtract from this via `capacity_used`.
+fn get_chunk_capacity(_chunk_index: usize, _start_h: usize) -> f64 {
+    SLOTS_PER_CHUNK
 }
 
 /// Maps a chunk index to the wall-clock hour it starts at.
@@ -365,6 +374,9 @@ pub fn solve(
             horizon_days: HORIZON_DAYS, chunks_per_day: CHUNKS_PER_DAY,
             errors: vec!["No schedulable tasks found.".to_string()],
             raw_priorities: vec![], packing_trace: vec![],
+            tag_set: vec![], energy_caps: vec![], chunk_caps: vec![],
+            start_h,
+            dirichlet_xi: vec![], dirichlet_mean: vec![],
         };
     }
 
@@ -388,8 +400,9 @@ pub fn solve(
 
     // C_k(c): per-tag energy capacity from Dirichlet posterior mean × C(c)
     let mut energy_cap: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
+    let mut dir_xi: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
+    let mut dir_mean: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
     for c in 0..TOTAL_CHUNKS {
-        if cap[c] <= 0.0 { continue; }
         let dow = chunk_to_dow(c, start_dow, start_h);
         let h = abs_hour_pos(c, start_h) + 1; // 1–6 for Dirichlet lookup
 
@@ -403,7 +416,11 @@ pub fn solve(
             .collect();
         let xi_sum: f64 = xi_vals.iter().sum();
         for k in 0..n_tags {
-            energy_cap[k][c] = (xi_vals[k] / xi_sum) * cap[c];
+            dir_xi[k][c] = xi_vals[k];
+            dir_mean[k][c] = xi_vals[k] / xi_sum;
+            if cap[c] > 0.0 {
+                energy_cap[k][c] = dir_mean[k][c] * cap[c];
+            }
         }
     }
 
@@ -449,29 +466,14 @@ pub fn solve(
     // Phase 4: Build q vector (linear cost)
     // ──────────────────────────────────────────────────────────────────────
     //
-    // q[x_{ic}] = −r_i(c)
+    // q[x_{ic}] = −r_i(c) = −α_k · T / max(tᶠ − c, 1)
     //
-    // Urgency reward combines two signals:
-    // 1. Deadline pressure: tasks with tight deadlines get high reward everywhere
-    //    in their window. Measured by w_i / window_size (how much of the window
-    //    the task fills). A 2-slot task with 4 chunks of window has pressure 0.5.
-    //    A no-deadline task has pressure 2/84 ≈ 0.02.
-    // 2. Earliness preference: within a task's window, earlier chunks get slightly
-    //    higher reward. This ensures the greedy packs tasks into the earliest
-    //    available slots, not the latest.
-    //
-    // r_i(c) = α · (pressure_i × T + (t_f - c))
-    //
-    // The pressure term dominates for tight-deadline tasks, making them
-    // sort above no-deadline tasks. The earliness term (t_f - c) breaks ties
-    // by preferring earlier chunks within the same task.
+    // See delay_reward() for the formula. 1/slack urgency: tasks near their
+    // deadline get hyperbolically increasing reward.
 
     let mut q = vec![0.0; n_vars];
     for (var, &(i, c)) in x_vars.iter().enumerate() {
-        let window = (tasks[i].t_f as f64 - tasks[i].t_s as f64).max(1.0);
-        let pressure = tasks[i].w / window; // how tight is the deadline
-        let earliness = (tasks[i].t_f as f64 - c as f64).max(0.0); // prefer earlier
-        let r_ic = params.alpha_for(&tasks[i].tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
+        let r_ic = delay_reward(params.alpha_for(&tasks[i].tag), tasks[i].t_f, c);
         q[var] = -r_ic;
     }
 
@@ -665,6 +667,12 @@ pub fn solve(
         errors: vec![],
         raw_priorities: vec![],
         packing_trace: vec![],
+        tag_set: tag_set.clone(),
+        energy_caps: energy_cap.clone(),
+        chunk_caps: cap.clone(),
+        start_h,
+        dirichlet_xi: dir_xi.clone(),
+        dirichlet_mean: dir_mean.clone(),
     };
 
     if total_work > total_cap {
@@ -685,27 +693,16 @@ pub fn solve(
                 osqp::Status::Solved(s) | osqp::Status::SolvedInaccurate(s) => {
                     let y = s.y();
 
-                    // Step 2: Compute Λ_{ic} from duals.
-                    // Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c}
-                    let mut lambda: Vec<(usize, usize, f64)> = vec![]; // (task_idx, chunk, Λ)
-                    for &(i, c) in &x_vars {
-                        let window = (tasks[i].t_f as f64 - tasks[i].t_s as f64).max(1.0);
-                        let pressure = tasks[i].w / window;
-                        let earliness = (tasks[i].t_f as f64 - c as f64).max(0.0);
-                        let r_ic = params.alpha_for(&tasks[i].tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
-                        let nu_i = { let row = n_c1 + n_c2 + i; if row < y.len() { -y[row] } else { 0.0 } };
-                        let mu_c = if c < y.len() { (-y[c]).max(0.0) } else { 0.0 };
-                        let k = tag_idx.get(&tasks[i].tag).copied().unwrap_or(0);
-                        let eta_kc = { let row = n_c1 + k * TOTAL_CHUNKS + c; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
-                        let l = r_ic + nu_i - mu_c - eta_kc;
-                        lambda.push((i, c, l));
+                    // Step 2: Compute Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c}
+                    let lambda = compute_lambda(&x_vars, tasks, params, &tag_idx, n_c1, n_c2, y);
+                    for &(i, c, l) in &lambda {
                         if l > 0.01 {
                             output.raw_priorities.push((tasks[i].name.clone(), c, l));
                         }
                     }
 
                     // Step 3: Greedy pack using Λ directly.
-                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, debiased_w, &cap, n);
+                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, debiased_w, &cap, &energy_cap, &tag_idx, n);
                     output.packing_trace = trace;
                     build_output_from_schedule(&schedule, &x_vars, tasks, params, debiased_w,
                         &tag_set, n_c1, n_c2, start_h, &s, &mut output);
@@ -729,21 +726,11 @@ pub fn solve(
                 osqp::Status::MaxIterationsReached(s) | osqp::Status::TimeLimitReached(s) => {
                     output.errors.push("Solver hit time/iteration limit. Using partial duals.".to_string());
                     let y = s.y();
-                    let mut lambda: Vec<(usize, usize, f64)> = vec![];
-                    for &(i, c) in &x_vars {
-                        let window = (tasks[i].t_f as f64 - tasks[i].t_s as f64).max(1.0);
-                        let pressure = tasks[i].w / window;
-                        let earliness = (tasks[i].t_f as f64 - c as f64).max(0.0);
-                        let r_ic = params.alpha_for(&tasks[i].tag) * (pressure * TOTAL_CHUNKS as f64 + earliness);
-                        let nu_i = { let row = n_c1 + n_c2 + i; if row < y.len() { -y[row] } else { 0.0 } };
-                        let mu_c = if c < y.len() { (-y[c]).max(0.0) } else { 0.0 };
-                        let k = tag_idx.get(&tasks[i].tag).copied().unwrap_or(0);
-                        let eta_kc = { let row = n_c1 + k * TOTAL_CHUNKS + c; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
-                        let l = r_ic + nu_i - mu_c - eta_kc;
-                        lambda.push((i, c, l));
+                    let lambda = compute_lambda(&x_vars, tasks, params, &tag_idx, n_c1, n_c2, y);
+                    for &(i, c, l) in &lambda {
                         if l > 0.01 { output.raw_priorities.push((tasks[i].name.clone(), c, l)); }
                     }
-                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, debiased_w, &cap, n);
+                    let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, debiased_w, &cap, &energy_cap, &tag_idx, n);
                     output.packing_trace = trace;
                     build_output_from_schedule(&schedule, &x_vars, tasks, params, debiased_w,
                         &tag_set, n_c1, n_c2, start_h, &s, &mut output);
@@ -761,6 +748,42 @@ pub fn solve(
     output
 }
 
+// ── Dual variable extraction helpers ──
+
+fn extract_mu(y: &[f64], c: usize) -> f64 {
+    if c < y.len() { (-y[c]).max(0.0) } else { 0.0 }
+}
+
+fn extract_eta(y: &[f64], n_c1: usize, k: usize, c: usize) -> f64 {
+    let row = n_c1 + k * TOTAL_CHUNKS + c;
+    if row < y.len() { (-y[row]).max(0.0) } else { 0.0 }
+}
+
+fn extract_nu(y: &[f64], n_c1: usize, n_c2: usize, i: usize) -> f64 {
+    let row = n_c1 + n_c2 + i;
+    if row < y.len() { -y[row] } else { 0.0 }
+}
+
+/// Compute Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c} for all (task, chunk) pairs.
+fn compute_lambda(
+    x_vars: &[(usize, usize)],
+    tasks: &[TaskInput],
+    params: &SchedulerParams,
+    tag_idx: &HashMap<String, usize>,
+    n_c1: usize,
+    n_c2: usize,
+    y: &[f64],
+) -> Vec<(usize, usize, f64)> {
+    x_vars.iter().map(|&(i, c)| {
+        let r_ic = delay_reward(params.alpha_for(&tasks[i].tag), tasks[i].t_f, c);
+        let nu_i = extract_nu(y, n_c1, n_c2, i);
+        let mu_c = extract_mu(y, c);
+        let k = tag_idx.get(&tasks[i].tag).copied().unwrap_or(0);
+        let eta_kc = extract_eta(y, n_c1, k, c);
+        (i, c, r_ic + nu_i - mu_c - eta_kc)
+    }).collect()
+}
+
 /// Greedy packing driven by Λ_{ic} priority scores.
 ///
 /// The QP's duals produce Λ_{ic} = r_i(c) + ν_i − μ_c − η_{k_i,c} for each
@@ -769,16 +792,13 @@ pub fn solve(
 ///
 /// ## Algorithm
 ///
-/// ## Algorithm
+/// **Pass 1 (energy-aware)**: Sort all (task, chunk) pairs by Λ descending.
+/// For each pair, assign work if both physical capacity AND tag energy budget
+/// allow. This respects the Dirichlet-learned energy distribution.
 ///
-/// 1. Sort all (task, chunk) pairs by Λ_{ic} descending.
-/// 2. One-pass greedy: for each pair, if the task still has unallocated work
-///    and the chunk has remaining capacity, assign min(w_remaining, cap_remaining).
-/// 3. Λ for a given task varies smoothly (delay credit r_i(c) decreases
-///    linearly), so the greedy naturally fills adjacent chunks with the same
-///    task before moving to the next — producing whole-task blocks.
-/// 4. Tasks with low Λ across all chunks never get reached before capacity
-///    runs out → they are parked. No explicit focus penalty needed.
+/// **Pass 2 (energy-ignored)**: Any task still unfinished after pass 1 gets
+/// packed into the first available chunk with physical capacity, ignoring
+/// energy budgets. This ensures tasks are never parked when time exists.
 ///
 /// Returns: `(assignments, trace)`.
 fn greedy_pack_lambda(
@@ -786,6 +806,8 @@ fn greedy_pack_lambda(
     tasks: &[TaskInput],
     debiased_w: &HashMap<String, f64>,
     cap: &[f64],
+    energy_cap: &[Vec<f64>],  // energy_cap[tag_k][chunk_c]
+    tag_idx: &HashMap<String, usize>,
     n: usize,
 ) -> (Vec<(usize, usize, f64)>, Vec<(usize, String, usize, f64)>) {
     // Sort ALL (task, chunk) pairs by Λ descending — don't filter out negatives.
@@ -808,13 +830,15 @@ fn greedy_pack_lambda(
         .map(|i| debiased_w.get(&tasks[i].id).copied().unwrap_or(tasks[i].w))
         .collect();
 
+    // Per-tag energy budget remaining: remaining_energy[k][c]
+    let n_tags = energy_cap.len();
+    let mut remaining_energy: Vec<Vec<f64>> = energy_cap.to_vec();
+
     // Track per-task cumulative fractional completion for precedence checking
-    // completion[i] = slots assigned so far / w_i
     let task_w: Vec<f64> = (0..n)
         .map(|i| debiased_w.get(&tasks[i].id).copied().unwrap_or(tasks[i].w))
         .collect();
     let mut assigned: Vec<f64> = vec![0.0; n];
-    // Track the latest chunk each task has been assigned to
     let mut latest_chunk: Vec<Option<usize>> = vec![None; n];
 
     // Build parent index for precedence: task_idx → parent_task_idx
@@ -828,23 +852,54 @@ fn greedy_pack_lambda(
     let mut trace: Vec<(usize, String, usize, f64)> = vec![];
     let mut step = 0;
 
+    // ── Pass 1: energy-aware ──
     for &(task_idx, c, _lambda) in &pairs {
         if remaining_work[task_idx] <= 0.01 { continue; }
         if remaining_cap[c] <= 0.01 { continue; }
 
-        // Feasibility window check (should already be filtered by QP, but verify)
+        // Feasibility window check
         if c < tasks[task_idx].t_s || c > tasks[task_idx].t_f { continue; }
 
-        // Precedence check: if this task has a parent, the parent's fractional
-        // completion up to this chunk must be >= this task's fractional completion.
-        // Simplified: don't schedule a child in a chunk earlier than or equal to
-        // the parent's latest assigned chunk, unless the parent is fully done.
+        // Energy budget check: does this tag have remaining energy in this chunk?
+        let k = tag_idx.get(&tasks[task_idx].tag).copied().unwrap_or(0);
+        if k < n_tags && remaining_energy[k][c] <= 0.01 { continue; }
+
+        // Precedence check
         if let Some(parent_idx) = parent_of[task_idx] {
             if task_w[parent_idx] > 0.01 {
                 let parent_frac = assigned[parent_idx] / task_w[parent_idx];
                 let child_frac_after = (assigned[task_idx] + 0.01) / task_w[task_idx];
                 if child_frac_after > parent_frac + 0.01 {
-                    // Parent hasn't progressed enough — skip this (task, chunk)
+                    continue;
+                }
+            }
+        }
+
+        let energy_avail = if k < n_tags { remaining_energy[k][c] } else { f64::MAX };
+        let assign = remaining_work[task_idx].min(remaining_cap[c]).min(energy_avail);
+        schedule.push((task_idx, c, assign));
+        trace.push((step, tasks[task_idx].name.clone(), c, assign));
+        remaining_cap[c] -= assign;
+        remaining_work[task_idx] -= assign;
+        assigned[task_idx] += assign;
+        if k < n_tags { remaining_energy[k][c] -= assign; }
+        latest_chunk[task_idx] = Some(c);
+        step += 1;
+    }
+
+    // ── Pass 2: energy-ignored — re-sort remaining pairs by Λ, skip energy check ──
+    // Same Λ ordering as pass 1, but only energy constraints are relaxed.
+    for &(task_idx, c, _lambda) in &pairs {
+        if remaining_work[task_idx] <= 0.01 { continue; }
+        if remaining_cap[c] <= 0.01 { continue; }
+        if c < tasks[task_idx].t_s || c > tasks[task_idx].t_f { continue; }
+
+        // Precedence check (same as pass 1)
+        if let Some(parent_idx) = parent_of[task_idx] {
+            if task_w[parent_idx] > 0.01 {
+                let parent_frac = assigned[parent_idx] / task_w[parent_idx];
+                let child_frac_after = (assigned[task_idx] + 0.01) / task_w[task_idx];
+                if child_frac_after > parent_frac + 0.01 {
                     continue;
                 }
             }
@@ -856,26 +911,7 @@ fn greedy_pack_lambda(
         remaining_cap[c] -= assign;
         remaining_work[task_idx] -= assign;
         assigned[task_idx] += assign;
-        latest_chunk[task_idx] = Some(c);
         step += 1;
-    }
-
-    // Second pass: any task with remaining work gets placed in the first
-    // available chunk with capacity, regardless of Λ. This ensures tasks
-    // are never parked when capacity exists.
-    for i in 0..n {
-        if remaining_work[i] <= 0.01 { continue; }
-        for c in 0..TOTAL_CHUNKS {
-            if remaining_work[i] <= 0.01 { break; }
-            if remaining_cap[c] <= 0.01 { continue; }
-            let assign = remaining_work[i].min(remaining_cap[c]);
-            schedule.push((i, c, assign));
-            trace.push((step, tasks[i].name.clone(), c, assign));
-            remaining_cap[c] -= assign;
-            remaining_work[i] -= assign;
-            assigned[i] += assign;
-            step += 1;
-        }
     }
 
     (schedule, trace)
@@ -925,21 +961,17 @@ fn build_output_from_schedule(
     for (i, task) in tasks.iter().enumerate() {
         let total = task_allocated.get(&i).copied().unwrap_or(0.0);
         let w = debiased_w.get(&task.id).copied().unwrap_or(task.w);
-        let nu_row = n_c1 + n_c2 + i;
-        let nu_i = if nu_row < y.len() { -y[nu_row] } else { 0.0 };
-        let window = (task.t_f as f64 - task.t_s as f64).max(1.0);
-        let pressure = task.w / window;
+        let nu_i = extract_nu(y, n_c1, n_c2, i);
         let alpha = params.alpha_for(&task.tag);
 
         // (chunk, Λ, r_ic, ν_i, μ_c, η_kc)
         let mut scores: Vec<(usize, f64, f64, f64, f64, f64)> = vec![];
-        for (_var, &(vi, c)) in x_vars.iter().enumerate() {
+        for &(vi, c) in x_vars.iter() {
             if vi == i {
-                let earliness = (task.t_f as f64 - c as f64).max(0.0);
-                let r_ic = alpha * (pressure * TOTAL_CHUNKS as f64 + earliness);
-                let mu_c = if c < y.len() { (-y[c]).max(0.0) } else { 0.0 };
+                let r_ic = delay_reward(alpha, task.t_f, c);
+                let mu_c = extract_mu(y, c);
                 let k = tag_idx_map.get(&task.tag).copied().unwrap_or(0);
-                let eta_kc = { let row = n_c1 + k * TOTAL_CHUNKS + c; if row < y.len() { (-y[row]).max(0.0) } else { 0.0 } };
+                let eta_kc = extract_eta(y, n_c1, k, c);
                 let l = r_ic + nu_i - mu_c - eta_kc;
                 scores.push((c, l, r_ic, nu_i, mu_c, eta_kc));
             }
@@ -949,6 +981,7 @@ fn build_output_from_schedule(
             output.parked.push(task.id.clone());
         }
 
+        let window = (task.t_f as f64 - task.t_s as f64).max(1.0);
         output.task_info.push(TaskScheduleInfo {
             id: task.id.clone(),
             name: task.name.clone(),
@@ -957,7 +990,7 @@ fn build_output_from_schedule(
             t_s: task.t_s,
             t_f: task.t_f,
             alpha,
-            pressure,
+            pressure: task.w / window,
             completion_pressure: nu_i,
             total_allocated: total,
             priority_scores: scores,

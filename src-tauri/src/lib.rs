@@ -36,6 +36,8 @@ pub fn run() {
             commands::insert_task_at,
             commands::get_setting,
             commands::set_setting,
+            commands::train_nb_tag,
+            commands::train_dirichlet,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,9 +1,10 @@
-import { useEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useCallback, useRef, useState, useMemo } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import { useEditor, EditorContent, ReactRenderer } from "@tiptap/react";
+import { useEditor, EditorContent, ReactRenderer, ReactNodeViewRenderer } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Node, mergeAttributes, Extension } from "@tiptap/core";
+import TaskNodeViewComponent, { TaskContext } from "@components/TaskNodeView.jsx";
 import { Fragment } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -82,36 +83,12 @@ const TaskParagraph = Node.create({
         return { taskId: { default: null, rendered: false } };
     },
     parseHTML() { return [{ tag: "p" }]; },
+    // renderHTML is used for serialization (copy/paste, getJSON) — not for display.
     renderHTML({ node, HTMLAttributes }) {
-        const id = node.attrs.taskId || "";
-        return [
-            "div", { class: "task-block", "data-task-id": id },
-            ["div", { class: "task-divider", contenteditable: "false", draggable: "false" },
-                ["div", { class: "task-divider-line" }]],
-            ["div", { class: "task-row" },
-                ["span", { class: "task-drag-handle", contenteditable: "false" },
-                    ["i", { class: "fa-solid fa-grip-vertical" }]],
-                ["span", { class: "task-check task-sidebar-btn", contenteditable: "false" },
-                    ["i", { class: "fa-solid fa-check" }]],
-                ["p", mergeAttributes(HTMLAttributes), 0],
-                ["div", { class: "task-toolbar", contenteditable: "false" },
-                    ["span", { class: "task-sidebar-btn task-effort-btn" },
-                        ["i", { class: "fa-solid fa-circle" }]],
-                    ["span", { class: "task-sidebar-btn task-lock-btn" },
-                        ["i", { class: "fa-solid fa-lock" }]],
-                    ["span", { class: "task-sidebar-btn task-schedule-btn" },
-                        ["i", { class: "fa-solid fa-calendar-day" }]],
-                    ["span", { class: "task-sidebar-btn task-start-btn" },
-                        ["i", { class: "fa-solid fa-circle-play" }]],
-                    ["span", { class: "task-sidebar-btn task-due-btn" },
-                        ["i", { class: "fa-solid fa-circle-stop" }]],
-                    ["span", { class: "task-sidebar-btn task-rrule-btn" },
-                        ["i", { class: "fa-solid fa-rotate" }]],
-                    ["span", { class: "task-sidebar-btn task-collapse-btn" },
-                        ["i", { class: "fa-solid fa-compress" }]],
-                    ["span", { class: "task-sidebar-btn task-reply-btn" },
-                        ["i", { class: "fa-solid fa-angles-left" }]]]],
-        ];
+        return ["p", mergeAttributes(HTMLAttributes), 0];
+    },
+    addNodeView() {
+        return ReactNodeViewRenderer(TaskNodeViewComponent);
     },
 });
 
@@ -203,6 +180,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const suppress = useRef(false);
     const guard = useRef(false);
     const hydrated = useRef(false);
+    const [isHydrated, setIsHydrated] = useState(false);
     const localChangeRef = useRef(false); // set when pipeline modifies tasks, skip next taskList reload
     const visible = useRef(new Map());
     const updateTimer = useRef(null);
@@ -266,7 +244,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                         afterId: prevRow?.taskId || null,
                     }));
                 } else {
-                    dispatch(upsert({
+                    const p = dispatch(upsert({
                         id, content, position: row.position,
                         tags: rruleData?.tags || row.tags,
                         parent_id: rruleData?.parent_id || parentId,
@@ -277,6 +255,8 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                         locked: scheduleDate ? true : undefined,
                         created_at: ts, updated_at: ts,
                     }));
+                    // If this task has a parent, snapshot after upsert so arrows refresh
+                    if (parentId) p.then(() => dispatch(snapshot()));
                 }
                 visible.current.set(id, { content, position: row.position, created_at: ts });
             }
@@ -293,6 +273,19 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             if (!currentIds.has(id)) {
                 dispatch(remove(id)); visible.current.delete(id);
                 if (taskList) localChangeRef.current = true;
+            }
+        }
+
+        // In taskList mode: if the doc has a single empty paragraph with a known taskId,
+        // the user backspaced the last task. ProseMirror won't delete it (requires ≥1 node),
+        // so we detect it here and remove the task from the DB.
+        if (taskList && rows.length === 1 && rows[0].taskId) {
+            const content = rows[0].content;
+            const textRe = /\"text\"\s*:\s*\"[^\"]+\"/;
+            if (!textRe.test(content) && visible.current.has(rows[0].taskId)) {
+                dispatch(remove(rows[0].taskId));
+                visible.current.delete(rows[0].taskId);
+                localChangeRef.current = true;
             }
         }
 
@@ -362,60 +355,10 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
             const sel = `.task-block[data-task-id="${task.id}"]`;
             const effectiveDue = task.effective_due ? new Date(task.effective_due) : null;
-            const taskRules = [];
-
-            if (task.completed_at) {
-                taskRules.push(`${sel} .task-row p { text-decoration: line-through; opacity: 0.4; }`);
-                taskRules.push(`${sel} .task-check { color: var(--green) !important; }`);
-            } else if (task.is_deferred) {
-                taskRules.push(`${sel} .task-row p { opacity: 0.3; }`);
-            } else if (effectiveDue) {
-                const hoursLeft = (effectiveDue - nowDate) / 3600000;
-                if (hoursLeft < 0) {
-                    taskRules.push(`${sel} .task-row p { color: var(--red); }`);
-                } else if (hoursLeft < 24) {
-                    taskRules.push(`${sel} .task-row p { color: var(--orange); }`);
-                }
-            }
-
-            if (task.start_date) taskRules.push(`${sel} .task-start-btn { color: var(--blue) !important; }`);
-            if (task.due_date) taskRules.push(`${sel} .task-due-btn { color: var(--orange) !important; }`);
-            if (task.rrule) taskRules.push(`${sel} .task-rrule-btn { color: var(--blue) !important; }`);
-            if (task.schedule) taskRules.push(`${sel} .task-schedule-btn { color: var(--blue) !important; }`);
-            if (task.locked) {
-                taskRules.push(`${sel} .task-lock-btn { color: var(--blue) !important; }`);
-                taskRules.push(`${sel} .task-lock-btn i { --fa-primary: ""; }`);
-            }
-
-            const effortLabels = ["", "XS", "S", "M", "L", "XL"];
-            const effort = task.effort || 0;
-            if (effort > 0) {
-                taskRules.push(`${sel} .task-effort-btn i { display: none; }`);
-                taskRules.push(`${sel} .task-effort-btn::after { content: "${effortLabels[effort]}"; font-size: 9px; font-weight: 600; }`);
-            }
-            if (effort === 3) {
-                taskRules.push(`${sel} .task-row p { background: rgba(47, 51, 56, 0.03); }`);
-            } else if (effort === 4) {
-                taskRules.push(`${sel} .task-row p { background: rgba(47, 51, 56, 0.06); }`);
-            } else if (effort === 5) {
-                taskRules.push(`${sel} .task-row p { font-weight: 500; background: rgba(47, 51, 56, 0.08); }`);
-            }
-
-            if (effectiveDue && !task.completed_at) {
-                const due = moment(effectiveDue);
-                const daysAway = due.diff(moment(), "days", true);
-                let dueLabel;
-                if (daysAway < -1) dueLabel = due.fromNow();
-                else if (daysAway < 0) dueLabel = "overdue";
-                else if (daysAway < 1) dueLabel = due.fromNow();
-                else if (daysAway < 7) dueLabel = due.format("dddd, h:mm a");
-                else dueLabel = due.format("dddd, MMMM D, h:mm a");
-                const escaped = dueLabel.replace(/"/g, '\\"');
-                taskRules.push(`${sel} .task-row p::after { content: "${escaped}"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--gray-3); pointer-events: none; white-space: nowrap; }`);
-                taskRules.push(`${sel}:hover .task-row p::after { display: none; }`);
-            }
-
-            newCache.set(taskId, taskRules.join("\n"));
+            // All button state, effort labels, content styling, and due date labels
+            // are now handled by the React NodeView component (TaskNodeView.jsx).
+            // This effect only needs to exist for the collapse style sheet.
+            newCache.set(taskId, "");
         }
 
         styleCacheRef.current = newCache;
@@ -506,6 +449,9 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         ],
         content: "",
         editable: !isBrowse,
+        editorProps: {
+            attributes: { autocomplete: "off", autocorrect: "off", autocapitalize: "off", spellcheck: "false" },
+        },
         onUpdate: ({ editor, transaction }) => {
             if (transaction.getMeta("sync")) return;
             runPipeline(editor);
@@ -524,82 +470,56 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 setFocusedTaskId(node?.attrs?.taskId || null);
             } catch { setFocusedTaskId(null); }
 
-            try {
-                const resolved = editor.state.doc.resolve(from);
-                if (!isBrowse && !taskList && !isLoadingMore.current && resolved.index(0) === editor.state.doc.childCount - 1) {
-                    const coords = editor.view.coordsAtPos(from);
-                    const container = document.querySelector(".editor-content");
-                    if (coords && container) {
-                        const containerRect = container.getBoundingClientRect();
-                        const cursorY = coords.top - containerRect.top + container.scrollTop;
-                        const target = cursorY - container.clientHeight * 0.4;
-                        const start = container.scrollTop;
-                        const diff = target - start;
-                        if (Math.abs(diff) < 5) return;
-                        const duration = 250;
-                        const startTime = performance.now();
-                        function step(t) {
-                            const p = Math.min((t - startTime) / duration, 1);
-                            const ease = p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p;
-                            container.scrollTop = start + diff * ease;
-                            if (p < 1) requestAnimationFrame(step);
-                        }
-                        requestAnimationFrame(step);
-                    }
-                }
-            } catch {}
+            // No autoscroll here — initial centering handled by loadTasks.
         },
     });
 
     // --- Jump to task (cross-view navigation) ---
-    useEffect(() => {
-        if (!jumpToTaskId || !editor) return;
-        // Find the paragraph with this taskId and scroll to it
-        let targetPos = null;
-        editor.state.doc.descendants((node, pos) => {
-            if (node.type.name === "paragraph" && node.attrs.taskId === jumpToTaskId) {
-                targetPos = pos;
+    const scrollToPos = useCallback((pos) => {
+        if (!editor) return;
+        const editorDom = editor.view?.dom;
+        if (!editorDom) return;
+        const container = editorDom.closest(".editor-content");
+        if (!container) return;
+        try {
+            const coords = editor.view.coordsAtPos(pos);
+            if (coords) {
+                const containerRect = container.getBoundingClientRect();
+                const cursorY = coords.top - containerRect.top + container.scrollTop;
+                container.scrollTop = cursorY - container.clientHeight / 2;
             }
-            return false;
-        });
-        if (targetPos != null) {
-            // If replyToTaskId is set, create a reply (insert new paragraph after the target)
-            if (replyToTaskId) {
-                pendingParentId.current = replyToTaskId;
-                const endPos = editor.state.doc.content.size;
-                editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
-                editor.commands.focus("end");
-                // Scroll to the new paragraph at end
-                setTimeout(() => {
-                    const container = document.querySelector(".editor-content");
-                    try {
-                        const newEndPos = editor.state.doc.content.size - 1;
-                        const coords = editor.view.coordsAtPos(newEndPos);
-                        if (coords && container) {
-                            const containerRect = container.getBoundingClientRect();
-                            const target = coords.top - containerRect.top + container.scrollTop - container.clientHeight * 0.4;
-                            container.scrollTo({ top: target, behavior: "smooth" });
-                        }
-                    } catch {}
-                }, 50);
-            } else {
+        } catch {}
+    }, [editor]);
+
+    useEffect(() => {
+        if (!jumpToTaskId || !editor || !isHydrated) return;
+
+        if (replyToTaskId) {
+            // 1. Insert new paragraph at end with parent link
+            pendingParentId.current = replyToTaskId;
+            const endPos = editor.state.doc.content.size;
+            editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
+            // 2. Focus it
+            editor.commands.focus("end");
+            // 3. Scroll to it (wait for portal mount)
+            setTimeout(() => scrollToPos(editor.state.doc.content.size - 1), 100);
+        } else {
+            // Jump without reply — just focus + scroll to the target
+            let targetPos = null;
+            editor.state.doc.descendants((node, pos) => {
+                if (node.type.name === "paragraph" && node.attrs.taskId === jumpToTaskId) {
+                    targetPos = pos;
+                }
+                return false;
+            });
+            if (targetPos != null) {
                 editor.commands.setTextSelection(targetPos + 1);
                 editor.commands.focus();
-                setTimeout(() => {
-                    const container = document.querySelector(".editor-content");
-                    try {
-                        const coords = editor.view.coordsAtPos(targetPos + 1);
-                        if (coords && container) {
-                            const containerRect = container.getBoundingClientRect();
-                            const target = coords.top - containerRect.top + container.scrollTop - container.clientHeight * 0.4;
-                            container.scrollTo({ top: target, behavior: "smooth" });
-                        }
-                    } catch {}
-                }, 50);
+                setTimeout(() => scrollToPos(targetPos + 1), 100);
             }
         }
         if (onJumpHandled) onJumpHandled();
-    }, [jumpToTaskId, replyToTaskId, editor, onJumpHandled]);
+    }, [jumpToTaskId, replyToTaskId, editor, onJumpHandled, isHydrated, scrollToPos]);
 
     // --- Find decoration refresh ---
     useEffect(() => {
@@ -740,6 +660,8 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const allTasksRef = useRef([]); // sorted by created_at ascending (oldest first)
     const loadedCountRef = useRef(0);
     const isLoadingMore = useRef(false); // prevent autoscroll during load-more
+    const jumpToTaskIdRef = useRef(jumpToTaskId);
+    jumpToTaskIdRef.current = jumpToTaskId;
 
     const loadTasks = useCallback((taskArray) => {
         if (!editor) return;
@@ -769,14 +691,27 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         editor.commands.setContent({ type: "doc", content: content.length ? content : [{ type: "paragraph" }] });
         suppress.current = false;
         if (!isBrowse && !taskList) {
-            // Planning mode: cursor at end, last task centered in viewport.
-            editor.commands.focus("end");
-            const container = document.querySelector(".editor-content");
-            if (container) {
-                // scrollHeight includes 70vh bottom padding, so scrolling to max
-                // puts the last task roughly centered.
-                container.scrollTop = container.scrollHeight;
-            }
+            // Planning mode: scroll to end. Skip focus if there's a pending jump.
+            if (!jumpToTaskIdRef.current) editor.commands.focus("end");
+            // Wait for NodeView portals to mount, then scroll to end.
+            setTimeout(() => {
+                const editorDom = editor.view?.dom;
+                if (!editorDom) return;
+                const container = editorDom.closest(".editor-content");
+                if (!container) return;
+                // Get cursor position — most reliable way to find the end
+                try {
+                    const endPos = editor.state.doc.content.size - 1;
+                    const coords = editor.view.coordsAtPos(Math.max(endPos, 0));
+                    if (coords) {
+                        const containerRect = container.getBoundingClientRect();
+                        const cursorY = coords.top - containerRect.top + container.scrollTop;
+                        container.scrollTop = cursorY - container.clientHeight / 2;
+                    }
+                } catch {
+                    container.scrollTop = container.scrollHeight;
+                }
+            }, 50);
         }
     }, [editor, isBrowse]);
 
@@ -784,6 +719,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     useEffect(() => {
         if (loading || !editor || hydrated.current || isBrowse) return;
         hydrated.current = true;
+        setIsHydrated(true);
         const active = tasks.filter(t => !t.completed_at);
         if (active.length === 0) return;
         loadTasks(active);
@@ -805,6 +741,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         }
 
         hydrated.current = true;
+        setIsHydrated(true);
         loadTasks(taskList);
     }, [taskList, editor]);
 
@@ -911,6 +848,24 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         return () => container.removeEventListener("scroll", onScroll);
     }, [editor]);
 
+    // Force a specific NodeView to re-render by touching its ProseMirror attrs.
+    // This is needed because NodeViews read task state from tasksRef (a ref),
+    // so they don't re-render when Redux updates — only when PM attrs change.
+    const refreshNodeView = useCallback((taskId) => {
+        if (!editor) return;
+        editor.state.doc.descendants((node, pos) => {
+            if (node.type.name === "paragraph" && node.attrs.taskId === taskId) {
+                // No-op setNodeMarkup with same attrs triggers NodeView re-render
+                const tr = editor.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs });
+                tr.setMeta("sync", true);
+                guard.current = true;
+                editor.view.dispatch(tr);
+                guard.current = false;
+                return false;
+            }
+        });
+    }, [editor]);
+
     // --- Modal callbacks ---
 
     const handleDateChange = useCallback((taskId, field, date) => {
@@ -922,54 +877,46 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 schedule: date ? date.toISOString() : null,
                 locked: date ? true : false,
                 updated_at: now(),
-            }));
+            })).then(() => refreshNodeView(taskId));
         } else {
             dispatch(upsert({
                 ...task,
                 [field]: date ? date.toISOString() : null,
                 updated_at: now(),
-            }));
+            })).then(() => refreshNodeView(taskId));
         }
         if (triggerRebalance) triggerRebalance();
-    }, [dispatch]);
+    }, [dispatch, refreshNodeView]);
 
     const handleRruleChange = useCallback((taskId, rule) => {
         const task = tasksRef.current.find(t => t.id === taskId);
         if (!task) return;
-        dispatch(upsert({ ...task, rrule: rule, updated_at: now() }));
-    }, [dispatch]);
+        dispatch(upsert({ ...task, rrule: rule, updated_at: now() }))
+            .then(() => refreshNodeView(taskId));
+    }, [dispatch, refreshNodeView]);
 
     const cycleEffort = useCallback((taskId) => {
         const task = tasksRef.current.find(t => t.id === taskId);
         if (!task) return;
         const next = ((task.effort || 0) + 1) % 6; // 0=none, 1=XS, 2=S, 3=M, 4=L, 5=XL
-        dispatch(upsert({ ...task, effort: next, updated_at: now() }));
-    }, [dispatch]);
+        dispatch(upsert({ ...task, effort: next, updated_at: now() }))
+            .then(() => refreshNodeView(taskId));
+        if (triggerRebalance) triggerRebalance();
+    }, [dispatch, triggerRebalance, refreshNodeView]);
 
     const completeTask = useCallback((taskId) => {
         const task = tasksRef.current.find(t => t.id === taskId);
         if (!task) return;
         const ts = now();
 
-        // Optimistic: apply visual state immediately via inline style injection
-        const sel = `.task-block[data-task-id="${taskId}"]`;
-        const optStyle = document.getElementById("sisyphus-optimistic-style") || (() => {
-            const s = document.createElement("style"); s.id = "sisyphus-optimistic-style";
-            document.head.appendChild(s); return s;
-        })();
-
         if (task.completed_at) {
-            // Uncomplete — remove strikethrough immediately
-            optStyle.textContent = `${sel} .task-row p { text-decoration: none !important; opacity: 1 !important; } ${sel} .task-check { color: inherit !important; }`;
             dispatch(upsert({ ...task, completed_at: null, updated_at: ts }))
-                .then(() => { optStyle.textContent = ""; });
+                .then(() => refreshNodeView(taskId));
             return;
         }
 
-        // Complete — apply strikethrough immediately
-        optStyle.textContent = `${sel} .task-row p { text-decoration: line-through !important; opacity: 0.4 !important; } ${sel} .task-check { color: var(--green) !important; }`;
         dispatch(upsert({ ...task, completed_at: ts, updated_at: ts }))
-            .then(() => { optStyle.textContent = ""; });
+            .then(() => refreshNodeView(taskId));
 
         // If rrule, create next occurrence via pipeline
         if (task.rrule && editor) {
@@ -1022,7 +969,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             } catch (e) { console.error("rrule error:", e); }
         }
         if (triggerRebalance) triggerRebalance();
-    }, [dispatch, editor, triggerRebalance]);
+    }, [dispatch, editor, triggerRebalance, refreshNodeView]);
 
     // --- Keyboard shortcuts ---
 
@@ -1046,6 +993,29 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         }
 
         function onKeyDown(e) {
+            // In Action view (taskList mode only): backspace/delete on the last empty
+            // paragraph removes the task. ProseMirror won't delete the last node, so
+            // the onUpdate pipeline never fires — we must handle it here.
+            // NOT in planning view, where the last paragraph is just an empty line.
+            if (taskList && !isBrowse && (e.key === "Backspace" || e.key === "Delete") && editor) {
+                // Only handle if the keypress is inside THIS editor instance
+                const editorDom = editor.view?.dom;
+                if (editorDom && editorDom.contains(e.target)) {
+                    const doc = editor.state.doc;
+                    if (doc.childCount === 1) {
+                        const node = doc.firstChild;
+                        const tid = node?.attrs?.taskId;
+                        if (tid && node.textContent === "") {
+                            e.preventDefault(); e.stopPropagation();
+                            dispatch(remove(tid));
+                            visible.current.delete(tid);
+                            localChangeRef.current = true;
+                            dispatch(snapshot());
+                            return;
+                        }
+                    }
+                }
+            }
             // Block Enter in browse mode — no new task creation
             if (isBrowse && e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
                 e.preventDefault(); e.stopPropagation();
@@ -1111,144 +1081,67 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
         document.addEventListener("keydown", onKeyDown, true);
         return () => document.removeEventListener("keydown", onKeyDown, true);
-    }, [editor, getActiveTaskId, completeTask]);
+    }, [editor, getActiveTaskId, completeTask, taskList, isBrowse, dispatch]);
 
     // --- Click handlers ---
 
+    // Click handlers — most button clicks are now handled by TaskNodeView directly.
+    // Only the editor-content background click remains here.
     const handleClick = useCallback((e) => {
         if (!editor) return;
-
-        const divider = e.target.closest(".task-divider");
-        if (divider) {
-            e.stopPropagation(); e.preventDefault();
-            const block = divider.closest(".task-block");
-            if (block) {
-                const pos = editor.view.posAtDOM(block, 0);
-                if (pos != null) {
-                    const resolved = editor.state.doc.resolve(pos);
-                    const before = resolved.before(resolved.depth);
-                    const node = editor.state.schema.nodes.paragraph.create();
-                    editor.view.dispatch(editor.state.tr.insert(before, node));
-                    editor.commands.focus(before + 1);
-                }
-            }
-            return;
-        }
-
-        const checkBtn = e.target.closest(".task-check");
-        if (checkBtn) {
-            e.stopPropagation(); e.preventDefault();
-            const block = checkBtn.closest(".task-block");
-            const taskId = block?.getAttribute("data-task-id");
-            if (taskId) completeTask(taskId);
-            return;
-        }
-
-        const effortBtn = e.target.closest(".task-effort-btn");
-        if (effortBtn) {
-            e.stopPropagation(); e.preventDefault();
-            const taskId = effortBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (taskId) cycleEffort(taskId);
-            return;
-        }
-
-        const startBtn = e.target.closest(".task-start-btn");
-        if (startBtn) {
-            e.stopPropagation(); e.preventDefault();
-            const taskId = startBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (taskId) {
-                setRruleModal(null);
-                setDateModal(prev => prev?.taskId === taskId && prev?.field === "start_date" ? null : { taskId, field: "start_date" });
-            }
-            return;
-        }
-
-        const dueBtn = e.target.closest(".task-due-btn");
-        if (dueBtn) {
-            e.stopPropagation(); e.preventDefault();
-            const taskId = dueBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (taskId) {
-                setRruleModal(null);
-                setDateModal(prev => prev?.taskId === taskId && prev?.field === "due_date" ? null : { taskId, field: "due_date" });
-            }
-            return;
-        }
-
-        const rruleBtn = e.target.closest(".task-rrule-btn");
-        if (rruleBtn) {
-            e.stopPropagation(); e.preventDefault();
-            const taskId = rruleBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (taskId) {
-                setDateModal(null);
-                setRruleModal(prev => prev?.taskId === taskId ? null : { taskId });
-            }
-            return;
-        }
-
-        const scheduleBtn = e.target.closest(".task-schedule-btn");
-        if (scheduleBtn) {
-            e.stopPropagation(); e.preventDefault();
-            const taskId = scheduleBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (taskId) {
-                setRruleModal(null);
-                setDateModal(prev => prev?.taskId === taskId && prev?.field === "schedule" ? null : { taskId, field: "schedule" });
-            }
-            return;
-        }
-
-        const lockBtn = e.target.closest(".task-lock-btn");
-        if (lockBtn) {
-            e.stopPropagation(); e.preventDefault();
-            const taskId = lockBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (taskId) {
-                const task = tasksRef.current.find(t => t.id === taskId);
-                if (task) {
-                    if (task.locked) {
-                        dispatch(upsert({ ...task, locked: false, updated_at: now() }));
-                        if (triggerRebalance) triggerRebalance();
-                    } else if (task.schedule) {
-                        dispatch(upsert({ ...task, locked: true, updated_at: now() }));
-                        if (triggerRebalance) triggerRebalance();
-                    } else {
-                        // No schedule yet — open date picker
-                        setRruleModal(null);
-                        setDateModal({ taskId, field: "schedule" });
-                    }
-                }
-            }
-            return;
-        }
-
-        const collapseBtn = e.target.closest(".task-collapse-btn");
-        if (collapseBtn) {
-            e.stopPropagation(); e.preventDefault();
-            setDateModal(null); setRruleModal(null);
-            const taskId = collapseBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (taskId) setCollapsedRoot(prev => prev === taskId ? null : taskId);
-            return;
-        }
-
-        const replyBtn = e.target.closest(".task-reply-btn");
-        if (replyBtn) {
-            e.stopPropagation(); e.preventDefault();
-            setDateModal(null); setRruleModal(null);
-            const parentTaskId = replyBtn.closest(".task-block")?.getAttribute("data-task-id");
-            if (parentTaskId) {
-                if (onJumpToTask) {
-                    // In action mode, jump to planning view
-                    onJumpToTask(parentTaskId);
-                } else {
-                    pendingParentId.current = parentTaskId;
-                    const endPos = editor.state.doc.content.size;
-                    editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
-                    editor.commands.focus("end");
-                }
-            }
-            return;
-        }
-
         if (e.target.classList.contains("editor-content")) editor.commands.focus("end");
-    }, [editor, dispatch, completeTask]);
+    }, [editor]);
+
+    // --- Task context for NodeView ---
+
+    const toggleLock = useCallback((taskId) => {
+        const task = tasksRef.current.find(t => t.id === taskId);
+        if (!task) return;
+        dispatch(upsert({ ...task, locked: !task.locked, updated_at: now() }))
+            .then(() => { dispatch(snapshot()); refreshNodeView(taskId); });
+        if (triggerRebalance) triggerRebalance();
+    }, [dispatch, triggerRebalance, refreshNodeView]);
+
+    const openDateModal = useCallback((taskId, field) => {
+        setRruleModal(null);
+        setDateModal(prev => prev?.taskId === taskId && prev?.field === field ? null : { taskId, field });
+    }, []);
+
+    const openRruleModal = useCallback((taskId) => {
+        setDateModal(null);
+        setRruleModal(prev => prev?.taskId === taskId ? null : { taskId });
+    }, []);
+
+    const toggleCollapse = useCallback((taskId) => {
+        setDateModal(null); setRruleModal(null);
+        setCollapsedRoot(prev => prev === taskId ? null : taskId);
+    }, []);
+
+    const handleReply = useCallback((taskId) => {
+        setDateModal(null); setRruleModal(null);
+        if (onJumpToTask) {
+            onJumpToTask(taskId);
+        } else if (editor) {
+            pendingParentId.current = taskId;
+            const endPos = editor.state.doc.content.size;
+            editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
+            editor.commands.focus("end");
+        }
+    }, [editor, onJumpToTask]);
+
+    // Stable context — callbacks are all useCallbacks, tasksRef is a ref.
+    // NodeViews read from tasksRef on mount/ProseMirror update, not on every Redux change.
+    const taskContextValue = useMemo(() => ({
+        tasksRef,
+        completeTask,
+        cycleEffort,
+        toggleLock,
+        openDateModal,
+        openRruleModal,
+        toggleCollapse,
+        handleReply,
+        onTaskDrag: onTaskDragRef.current,
+    }), [completeTask, cycleEffort, toggleLock, openDateModal, openRruleModal, toggleCollapse, handleReply]);
 
     // --- Render ---
 
@@ -1266,8 +1159,10 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 </button>
             )}
             <div className="editor-content" onClick={handleClick} style={{ position: "relative" }}>
+                <TaskContext.Provider value={taskContextValue}>
                 <EditorContent editor={editor} />
-                <ReplyArrows editorRef={editor?.view?.dom} collapsedRoot={collapsedRoot} focusedTaskId={isBrowse ? null : focusedTaskId} />
+                {!taskList && <ReplyArrows editorRef={editor?.view?.dom} collapsedRoot={collapsedRoot} focusedTaskId={isBrowse ? null : focusedTaskId} />}
+                </TaskContext.Provider>
             </div>
 
             {dateModal && dateModalTask && (

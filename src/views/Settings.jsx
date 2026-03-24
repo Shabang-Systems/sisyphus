@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import strings from "@strings";
+import Training from "@views/Training.jsx";
+import Debug from "@views/Debug.jsx";
 import "./Settings.css";
 
 export default function Settings({ onLogout, triggerRebalance }) {
+    const [subView, setSubView] = useState(null); // "training" | "debug" | null
     const [calendars, setCalendars] = useState([]);
     const [loading, setLoading] = useState(true);
 
@@ -41,6 +44,9 @@ export default function Settings({ onLogout, triggerRebalance }) {
 
     if (loading) return <div className="settings"><div className="drag-region" data-tauri-drag-region /></div>;
 
+    if (subView === "training") return <Training onBack={() => setSubView(null)} />;
+    if (subView === "debug") return <Debug />;
+
     return (
         <div className="settings">
             <div className="drag-region" data-tauri-drag-region />
@@ -67,6 +73,21 @@ export default function Settings({ onLogout, triggerRebalance }) {
                     ))}
                     <div className="settings-cal-add" onClick={addUrl}>
                         <i className="fa-solid fa-plus" /> {strings.VIEWS__SETTINGS_ADD_CALENDAR}
+                    </div>
+                </div>
+
+                <div className="settings-section">
+                    <div className="settings-section-label">{strings.VIEWS__SETTINGS_TRAINING}</div>
+                    <div className="settings-section-hint">{strings.VIEWS__SETTINGS_TRAINING_HINT}</div>
+                    <div className="settings-cal-add" onClick={() => setSubView("training")}>
+                        <i className="fa-solid fa-flask" /> {strings.VIEWS__SETTINGS_OPEN_TRAINING}
+                    </div>
+                </div>
+
+                <div className="settings-section">
+                    <div className="settings-section-label">{strings.VIEWS__DEBUG_TITLE}</div>
+                    <div className="settings-cal-add" onClick={() => setSubView("debug")}>
+                        <i className="fa-solid fa-user-ninja" /> {strings.VIEWS__DEBUG_TITLE.toLowerCase()}
                     </div>
                 </div>
 

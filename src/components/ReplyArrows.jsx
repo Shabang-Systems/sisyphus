@@ -15,10 +15,9 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
 
     const updatePositions = useCallback(() => {
         if (!editorRef) return;
-        const container = document.querySelector(".editor-content");
+        const container = editorRef.closest(".editor-content");
         if (!container) return;
-        const tiptap = container.querySelector(".tiptap");
-        if (!tiptap) return;
+        const tiptap = editorRef.closest(".tiptap") || editorRef;
 
         const originRect = tiptap.getBoundingClientRect();
         const map = new Map();
@@ -41,7 +40,7 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
         const map = positionMap.current;
         if (!map.size) { setArrows([]); return; }
 
-        const container = document.querySelector(".editor-content");
+        const container = editorRef?.closest(".editor-content");
         const rightEdge = container ? container.clientWidth - 20 : 300;
 
         const result = [];
@@ -70,10 +69,13 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
         buildArrows();
     }, [updatePositions, buildArrows]);
 
-    // On tasks/collapse change: update positions after a frame (layout settled)
+    // On tasks/collapse change: update positions after portals mount.
+    // Double refresh: once at 80ms for fast draws, once at 300ms to catch
+    // late-mounting portals (e.g. reply from Action view remounts Editor).
     useEffect(() => {
-        const raf = requestAnimationFrame(refresh);
-        return () => cancelAnimationFrame(raf);
+        const t1 = setTimeout(refresh, 80);
+        const t2 = setTimeout(refresh, 300);
+        return () => { clearTimeout(t1); clearTimeout(t2); };
     }, [tasks, collapsedRoot, refresh]);
 
     // On scroll: just rebuild arrows from shadow state (positions are relative, no DOM read needed)

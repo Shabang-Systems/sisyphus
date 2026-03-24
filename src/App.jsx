@@ -11,7 +11,6 @@ import Browse from "@views/Browse.jsx";
 import Action from "@views/Action.jsx";
 import Completed from "@views/Completed.jsx";
 import Settings from "@views/Settings.jsx";
-import Debug from "@views/Debug.jsx";
 import strings from "@strings";
 import "./App.css";
 
@@ -21,38 +20,18 @@ function RebalanceSpinner() {
     return <div className="rebalance-spinner" />;
 }
 
-// Global hook: debounced rebalance trigger
-// Defers execution if editor is focused at fire time; retries after blur
+// Global hook: idle-debounced rebalance trigger.
+// Resets on every call. Only fires after 5s of inactivity — long enough that
+// typing a new task or editing text won't trigger mid-composition, but short
+// enough that pausing to think will pick up changes.
 function useRebalance() {
     const dispatch = useDispatch();
     const timerRef = useRef(null);
-    const pendingRef = useRef(false);
-
-    const tryFire = useCallback(() => {
-        const active = document.activeElement;
-        const inEditor = active?.closest?.(".ProseMirror");
-        if (inEditor) {
-            pendingRef.current = true;
-            return;
-        }
-        pendingRef.current = false;
-        dispatch(rebalance());
-    }, [dispatch]);
-
-    useEffect(() => {
-        const onBlur = () => {
-            if (pendingRef.current) {
-                setTimeout(tryFire, 500);
-            }
-        };
-        document.addEventListener("focusout", onBlur);
-        return () => document.removeEventListener("focusout", onBlur);
-    }, [tryFire]);
 
     return useCallback(() => {
         if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(tryFire, 1500);
-    }, [tryFire]);
+        timerRef.current = setTimeout(() => dispatch(rebalance()), 5000);
+    }, [dispatch]);
 }
 
 function Sidebar({ activeView, onViewChange }) {
@@ -89,14 +68,6 @@ function Sidebar({ activeView, onViewChange }) {
                 data-tooltip-content={strings.TOOLTIPS.COMPLETED}
             >
                 <i className="fa-solid fa-user-graduate"></i>
-            </div>
-            <div
-                className={"bottom-nav-button" + (activeView === "debug" ? " active" : "")}
-                onClick={() => onViewChange("debug")}
-                data-tooltip-id="rootp"
-                data-tooltip-content={strings.TOOLTIPS.DEBUG}
-            >
-                <i className="fa-solid fa-user-ninja"></i>
             </div>
             <div
                 className={"bottom-nav-button" + (activeView === "settings" ? " active" : "")}
@@ -163,7 +134,6 @@ function AppInner() {
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                     {activeView === "completed" && <Completed />}
                     {activeView === "settings" && <Settings onLogout={logout} triggerRebalance={triggerRebalance} />}
-                    {activeView === "debug" && <Debug />}
                 </>
             ) : (
                 <Auth onAuth={auth} />

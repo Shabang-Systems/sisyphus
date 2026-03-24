@@ -1,0 +1,213 @@
+.training {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    user-select: none;
+}
+
+.training .drag-region {
+    height: 48px;
+    width: 100%;
+    flex-shrink: 0;
+}
+
+.training-main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 60px 40px 80px;
+}
+
+.training-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.training-back {
+    font-size: 13px;
+    color: var(--gray-3);
+    cursor: pointer;
+    padding: 4px;
+    transition: color 0.12s ease;
+}
+
+.training-back:hover {
+    color: var(--fg);
+}
+
+.training-title {
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--gray-4);
+}
+
+.training-input-section {
+    margin-bottom: 20px;
+}
+
+.training-input {
+    width: 100%;
+    font-family: var(--font-family);
+    font-size: 14px;
+    padding: 8px 12px;
+    border: 1px solid var(--gray-1);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fg);
+    outline: none;
+    transition: border-color 0.12s ease;
+    box-sizing: border-box;
+}
+
+.training-input:focus {
+    border-color: var(--gray-2);
+}
+
+.training-input::placeholder {
+    color: var(--gray-3);
+}
+
+.training-section-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--gray-3);
+    margin-bottom: 8px;
+    text-transform: lowercase;
+}
+
+.training-tasks {
+    margin-bottom: 24px;
+}
+
+.training-task {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s ease;
+    border: 1px solid transparent;
+}
+
+.training-task:hover {
+    background: var(--gray-1);
+}
+
+.training-task.selected {
+    border-color: var(--blue);
+    background: rgba(55, 165, 190, 0.06);
+}
+
+.training-task-text {
+    flex: 1;
+    font-size: 13px;
+    color: var(--fg);
+}
+
+.training-task-tag {
+    font-size: 11px;
+    color: var(--blue);
+    flex-shrink: 0;
+}
+
+.training-task-remove {
+    font-size: 9px;
+    color: var(--gray-2);
+    cursor: pointer;
+    padding: 4px;
+    transition: color 0.12s ease;
+    flex-shrink: 0;
+}
+
+.training-task-remove:hover {
+    color: var(--red);
+}
+
+.training-empty {
+    font-size: 12px;
+    color: var(--gray-3);
+    padding: 20px 0;
+}
+
+.training-grid-section {
+    margin-top: 8px;
+}
+
+.training-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.training-grid-header {
+    display: flex;
+    gap: 1px;
+}
+
+.training-grid-corner {
+    width: 36px;
+    flex-shrink: 0;
+}
+
+.training-grid-col-label {
+    flex: 1;
+    font-size: 9px;
+    color: var(--gray-3);
+    text-align: center;
+    padding: 4px 0;
+}
+
+.training-grid-row {
+    display: flex;
+    gap: 1px;
+}
+
+.training-grid-row-label {
+    width: 36px;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--gray-3);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 6px;
+}
+
+.training-grid-cell {
+    flex: 1;
+    min-height: 36px;
+    border: 1px solid var(--gray-1);
+    border-radius: 3px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 2px;
+    transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.training-grid-cell.clickable {
+    cursor: pointer;
+}
+
+.training-grid-cell.clickable:hover {
+    background: rgba(55, 165, 190, 0.12);
+    border-color: var(--blue);
+}
+
+.training-grid-cell.filled {
+    background: rgba(55, 165, 190, 0.05);
+}
+
+.training-grid-cell-tag {
+    font-size: 8px;
+    color: var(--blue);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}

@@ -144,11 +144,11 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
         .map(|(id, tag, _)| (id.clone(), tag.clone()))
         .collect();
 
-    // Separate locked tasks (fixed schedule) from free tasks (to be solved)
+    // Separate locked tasks from free tasks (to be solved)
     let mut scheduler_tasks: Vec<TaskInput> = Vec::new();
     for t in &active {
-        // Skip locked tasks — they don't enter the solver
-        if t.locked && t.schedule.is_some() { continue; }
+        // Skip locked tasks — they don't enter the solver, with or without a schedule
+        if t.locked { continue; }
 
         let tag = predicted_tags.get(&t.id).cloned().unwrap_or_else(|| "__untagged__".to_string());
         let t_s = date_to_chunk_start(&t.start_date);
@@ -478,4 +478,27 @@ pub async fn set_setting(key: String, value: String, state: tauri::State<'_, Glo
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── Training ──
+
+/// Train NB Model 2 (tag prediction) with explicit text+tag pairs.
+/// Does NOT create tasks in the database — only updates nb_tags / nb_tag_priors.
+#[tauri::command]
+pub async fn train_nb_tag(text: String, tag: String, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+    nb::update_tag_model(pool, &text, &tag).await.map_err(|e| e.to_string())
+}
+
+/// Train Dirichlet energy model with explicit (dow, chunk, tag, slots) observations.
+/// Does NOT create tasks — directly updates dirichlet_state.
+#[tauri::command]
+pub async fn train_dirichlet(
+    observations: Vec<(usize, usize, String, f64)>,
+    state: tauri::State<'_, GlobalState>,
+) -> Result<(), String> {
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+    energy::update_dirichlet(pool, &observations).await.map_err(|e| e.to_string())
 }

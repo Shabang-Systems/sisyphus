@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::str::FromStr;
@@ -421,6 +422,23 @@ impl GlobalState {
                             "__untagged__".to_string()
                         };
                         let _ = crate::nb::update_duration_model(pool, &tag, task.effort, delta_slots).await;
+
+                        // Update Dirichlet energy model: observe this tag at completion time's (dow, chunk)
+                        let comp_local = chrono::DateTime::parse_from_rfc3339(completed_at)
+                            .map(|d| d.with_timezone(&chrono::Local))
+                            .or_else(|_| {
+                                chrono::NaiveDateTime::parse_from_str(completed_at, "%Y-%m-%d %H:%M:%S")
+                                    .map(|d| d.and_local_timezone(chrono::Local).single().unwrap_or_else(|| chrono::Local::now()))
+                            });
+                        if let Ok(dt) = comp_local {
+                            let dow = dt.format("%u").to_string().parse::<usize>().unwrap_or(1); // 1=Mon..7=Sun
+                            let chunk = (dt.hour() as usize / 4) + 1; // 1–6
+                            let slots = crate::scheduler::effort_to_slots(task.effort);
+                            let _ = crate::energy::update_dirichlet(
+                                pool,
+                                &[(dow, chunk, tag.clone(), slots)],
+                            ).await;
+                        }
                     }
                 }
             }
