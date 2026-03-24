@@ -32,6 +32,7 @@
     "react-redux": "^9",
     "react-tooltip": "^5.30.0",
     "rrule": "^2.8.1",
+    "shepherd.js": "^15.2.2",
     "uuid": "^11"
   },
   "devDependencies": {

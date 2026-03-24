@@ -13,6 +13,7 @@ import Browse from "@views/Browse.jsx";
 import Action from "@views/Action.jsx";
 import Completed from "@views/Completed.jsx";
 import Settings from "@views/Settings.jsx";
+import { useTour } from "@components/Tour.jsx";
 import shortcuts from "./shortcuts.js";
 import strings from "@strings";
 import "./App.css";
@@ -145,6 +146,7 @@ function AppInner() {
     const [jumpToTaskId, setJumpToTaskId] = useState(null);
 
     const [replyToTaskId, setReplyToTaskId] = useState(null);
+    const tour = useTour({ onViewChange: setActiveView });
 
     const views = ["action", "editor", "browse", "completed", "settings"];
 
@@ -220,7 +222,7 @@ function AppInner() {
                     {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} replyToTaskId={replyToTaskId} onJumpHandled={() => { setJumpToTaskId(null); setReplyToTaskId(null); }} triggerRebalance={triggerRebalance} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}
                     {activeView === "completed" && <Completed />}
-                    {activeView === "settings" && <Settings onLogout={logout} triggerRebalance={triggerRebalance} />}
+                    {activeView === "settings" && <Settings onLogout={logout} triggerRebalance={triggerRebalance} onStartTour={() => tour.start()} />}
                 </>
             ) : (
                 <Auth onAuth={auth} />

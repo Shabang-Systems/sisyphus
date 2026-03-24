@@ -1,0 +1,78 @@
+/* Override shepherd defaults to match sisyphus style */
+
+.sisyphus-tour-step.shepherd-element {
+    font-family: var(--font-family);
+    max-width: 280px;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.sisyphus-tour-step .shepherd-content {
+    border-radius: 4px;
+    padding: 0;
+}
+
+.sisyphus-tour-step .shepherd-header {
+    display: none;
+}
+
+.sisyphus-tour-step .shepherd-text {
+    font-family: var(--font-family);
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--fg);
+    padding: 10px 12px;
+}
+
+.sisyphus-tour-step .shepherd-text p {
+    margin: 0;
+}
+
+.sisyphus-tour-step .shepherd-footer {
+    padding: 0 12px 10px;
+    gap: 6px;
+}
+
+.sisyphus-tour-btn {
+    font-family: var(--font-family);
+    font-size: 10px;
+    background: transparent;
+    color: var(--blue);
+    border: 1px solid var(--blue);
+    border-radius: 2px;
+    padding: 3px 10px;
+    margin: 0;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sisyphus-tour-btn:not(:disabled):hover {
+    background: var(--blue);
+    color: #fff;
+}
+
+.sisyphus-tour-btn-secondary {
+    font-family: var(--font-family);
+    font-size: 10px;
+    background: transparent;
+    color: var(--gray-3);
+    border: 1px solid var(--gray-2);
+    border-radius: 2px;
+    padding: 3px 10px;
+    margin: 0;
+    cursor: pointer;
+    transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.sisyphus-tour-btn-secondary:not(:disabled):hover {
+    color: var(--fg);
+    border-color: var(--gray-3);
+}
+
+.shepherd-modal-overlay-container.shepherd-modal-is-visible {
+    opacity: 0.3;
+}
+
+.shepherd-arrow:before {
+    background: #fff;
+}

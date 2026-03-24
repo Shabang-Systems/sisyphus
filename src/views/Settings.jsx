@@ -5,7 +5,7 @@ import Training from "@views/Training.jsx";
 import Debug from "@views/Debug.jsx";
 import "./Settings.css";
 
-export default function Settings({ onLogout, triggerRebalance }) {
+export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
     const [subView, setSubView] = useState(null); // "training" | "debug" | null
     const [calendars, setCalendars] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -85,6 +85,13 @@ export default function Settings({ onLogout, triggerRebalance }) {
                     <div className="settings-section-label">{strings.VIEWS__DEBUG_TITLE}</div>
                     <div className="settings-section-hint">
                         <span className="settings-cal-add" onClick={() => setSubView("debug")}>{strings.VIEWS__DEBUG_CTA}</span> {strings.VIEWS__DEBUG_HINT}
+                    </div>
+                </div>
+
+                <div className="settings-section">
+                    <div className="settings-section-label">{strings.VIEWS__SETTINGS_TUTORIAL}</div>
+                    <div className="settings-section-hint">
+                        <span className="settings-cal-add" onClick={onStartTour}>{strings.VIEWS__SETTINGS_TUTORIAL_CTA}</span> {strings.VIEWS__SETTINGS_TUTORIAL_HINT}
                     </div>
                 </div>
 

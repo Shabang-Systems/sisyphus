@@ -33,14 +33,13 @@
 .auth .button-inline {
     display: inline;
     cursor: pointer;
-    color: var(--cursor);
-    font-weight: 500;
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    color: var(--blue);
+    opacity: 0.7;
+    transition: opacity 0.3s linear;
 }
 
 .auth .button-inline:hover {
-    opacity: 0.7;
+    opacity: 1;
 }
 
 .auth .copyright {
