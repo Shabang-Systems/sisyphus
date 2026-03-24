@@ -5,12 +5,8 @@ import { snapshot } from "@api/utils.js";
 // Rebalance: compute_schedule + snapshot, debounced externally
 // Uses a frame delay to ensure spinner renders before heavy work starts
 export const rebalance = createAsyncThunk('ui/rebalance', async (_, { dispatch }) => {
-    // Let the spinner render
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     await invoke('compute_schedule');
     await dispatch(snapshot());
-    // Keep spinner visible briefly so user sees it
-    await new Promise(r => setTimeout(r, 300));
 });
 
 const ui = createSlice({
@@ -20,6 +16,7 @@ const ui = createSlice({
         filePath: null,
         clock: Date.now(),
         rebalancing: false,
+        syncPending: 0,
     },
     reducers: {
         setFilePath: (state, { payload }) => {
@@ -28,6 +25,8 @@ const ui = createSlice({
         tick: (state) => {
             state.clock = Date.now();
         },
+        syncStart: (state) => { state.syncPending++; },
+        syncEnd: (state) => { state.syncPending = Math.max(0, state.syncPending - 1); },
     },
     extraReducers: (builder) => {
         builder
@@ -49,5 +48,5 @@ const ui = createSlice({
     },
 });
 
-export const { setFilePath, tick } = ui.actions;
+export const { setFilePath, tick, syncStart, syncEnd } = ui.actions;
 export default ui.reducer;

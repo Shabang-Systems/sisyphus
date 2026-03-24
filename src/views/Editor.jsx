@@ -12,7 +12,8 @@ import { RRule } from "rrule";
 import moment from "moment";
 import { snapshot } from "@api/utils.js";
 import { tick } from "@api/ui.js";
-import { upsert, batchUpsert, remove, setParent, search, insertTaskAt } from "@api/tasks.js";
+import { updateTask, addTask, dropTask } from "@api/tasks.js";
+import { txSet, txCreate, txDelete } from "@api/sync.js";
 import { v4 as uuid } from "uuid";
 import { invoke } from "@tauri-apps/api/core";
 import { Tag, extractTags } from "@components/TagExtension.js";
@@ -195,7 +196,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     useEffect(() => { findBarRef.current = findBar; if (findBar && findInputRef.current) findInputRef.current.focus(); }, [findBar]);
     // Find decoration refresh — moved after useEditor (see below)
     useEffect(() => { searchQueryRef.current = searchQuery; }, [searchQuery]);
-    useEffect(() => { tasksRef.current = allTasks; }, [allTasks]);
+    tasksRef.current = allTasks; // synchronous — always fresh for pipeline reads
     useEffect(() => { dispatch(snapshot()); }, [dispatch]);
 
     // --- Pipeline ---
@@ -226,38 +227,33 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 }
                 const rruleData = pendingRruleData.current;
                 pendingRruleData.current = null;
-                if (taskList) {
-                    // In taskList mode, use atomic insert_task_at with position shifting
-                    const prevRow = row.position > 0 ? rows[row.position - 1] : null;
-                    dispatch(insertTaskAt({
-                        task: {
-                            id, content, position: 0, // position computed by Rust
-                            tags: rruleData?.tags || row.tags,
-                            parent_id: rruleData?.parent_id || parentId,
-                            start_date: rruleData?.start_date,
-                            due_date: rruleData?.due_date,
-                            rrule: rruleData?.rrule,
-                            schedule: scheduleDate || null,
-                            locked: scheduleDate ? true : false,
-                            created_at: ts, updated_at: ts,
-                        },
-                        afterId: prevRow?.taskId || null,
-                    }));
-                } else {
-                    const p = dispatch(upsert({
-                        id, content, position: row.position,
-                        tags: rruleData?.tags || row.tags,
-                        parent_id: rruleData?.parent_id || parentId,
-                        start_date: rruleData?.start_date,
-                        due_date: rruleData?.due_date,
-                        rrule: rruleData?.rrule,
-                        schedule: scheduleDate || undefined,
-                        locked: scheduleDate ? true : undefined,
-                        created_at: ts, updated_at: ts,
-                    }));
-                    // If this task has a parent, snapshot after upsert so arrows refresh
-                    if (parentId) p.then(() => dispatch(snapshot()));
-                }
+                // Optimistic: add task to Redux immediately, sync to Rust in background
+                dispatch(addTask({
+                    id, content, position: row.position,
+                    tags: rruleData?.tags || row.tags,
+                    parent_id: rruleData?.parent_id || parentId || null,
+                    start_date: rruleData?.start_date || null,
+                    due_date: rruleData?.due_date || null,
+                    completed_at: null,
+                    rrule: rruleData?.rrule || null,
+                    effort: 0,
+                    schedule: scheduleDate || null,
+                    locked: scheduleDate ? true : false,
+                    effective_due: null,
+                    is_deferred: false,
+                    created_at: ts, updated_at: ts,
+                }));
+                txCreate({
+                    id, content, position: row.position,
+                    tags: rruleData?.tags || row.tags,
+                    parent_id: rruleData?.parent_id || parentId || null,
+                    start_date: rruleData?.start_date || null,
+                    due_date: rruleData?.due_date || null,
+                    completed_at: null, rrule: rruleData?.rrule || null,
+                    effort: 0, schedule: scheduleDate || null,
+                    locked: scheduleDate ? true : false,
+                    created_at: ts, updated_at: ts,
+                });
                 visible.current.set(id, { content, position: row.position, created_at: ts });
             }
             tr.setMeta("sync", true);
@@ -265,13 +261,13 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             editor.view.dispatch(tr);
             guard.current = false;
             if (taskList) localChangeRef.current = true;
-            if (triggerRebalance) triggerRebalance();
         }
 
         const currentIds = new Set(rows.map(r => r.taskId));
         for (const [id] of visible.current) {
             if (!currentIds.has(id)) {
-                dispatch(remove(id)); visible.current.delete(id);
+                dispatch(dropTask(id)); txDelete(id);
+                visible.current.delete(id);
                 if (taskList) localChangeRef.current = true;
             }
         }
@@ -283,51 +279,32 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             const content = rows[0].content;
             const textRe = /\"text\"\s*:\s*\"[^\"]+\"/;
             if (!textRe.test(content) && visible.current.has(rows[0].taskId)) {
-                dispatch(remove(rows[0].taskId));
+                dispatch(dropTask(rows[0].taskId)); txDelete(rows[0].taskId);
                 visible.current.delete(rows[0].taskId);
                 localChangeRef.current = true;
             }
         }
 
-        if (updateTimer.current) clearTimeout(updateTimer.current);
-        updateTimer.current = setTimeout(() => {
-            const fresh = readDoc(editor.state.doc);
-            dedup(fresh);
-            const ts2 = now();
-            const taskMap = new Map(tasksRef.current.map(t => [t.id, t]));
-            const batch = [];
-            for (const row of fresh) {
-                if (!row.taskId) continue;
-                const prev = visible.current.get(row.taskId);
-                if (!prev) continue;
-                // When taskList is provided, don't update position (local index != global position)
-                const posChanged = !taskList && prev.position !== row.position;
-                if (prev.content !== row.content || posChanged) {
-                    // Preserve scheduling fields from Redux
-                    const existing = taskMap.get(row.taskId);
-                    batch.push({
-                        id: row.taskId, content: row.content,
-                        position: taskList ? (existing?.position ?? row.position) : row.position,
-                        tags: row.tags, created_at: prev.created_at, updated_at: ts2,
-                        parent_id: existing?.parent_id,
-                        start_date: existing?.start_date, due_date: existing?.due_date,
-                        completed_at: existing?.completed_at, rrule: existing?.rrule,
-                        effort: existing?.effort,
-                        schedule: existing?.schedule,
-                        locked: existing?.locked,
-                    });
-                    visible.current.set(row.taskId, { content: row.content, position: row.position, created_at: prev.created_at });
-                }
+        // Diff content/position changes and dispatch immediately to Redux + queue transactions
+        const fresh = readDoc(editor.state.doc);
+        dedup(fresh);
+        const ts2 = now();
+        const taskMap = new Map(tasksRef.current.map(t => [t.id, t]));
+        for (const row of fresh) {
+            if (!row.taskId) continue;
+            const prev = visible.current.get(row.taskId);
+            if (!prev) continue;
+            const posChanged = !taskList && prev.position !== row.position;
+            if (prev.content !== row.content || posChanged) {
+                const pos = taskList ? (taskMap.get(row.taskId)?.position ?? row.position) : row.position;
+                dispatch(updateTask({ id: row.taskId, changes: { content: row.content, tags: row.tags, position: pos, updated_at: ts2 } }));
+                txSet(row.taskId, "content", row.content);
+                txSet(row.taskId, "tags", row.tags);
+                txSet(row.taskId, "position", pos);
+                visible.current.set(row.taskId, { content: row.content, position: row.position, created_at: prev.created_at });
             }
-            if (batch.length === 1) {
-                dispatch(upsert(batch[0]));
-            } else if (batch.length > 1) {
-                dispatch(batchUpsert(batch));
-            }
-        }, 300);
+        }
     }, [dispatch]);
-
-    useEffect(() => () => { if (updateTimer.current) clearTimeout(updateTimer.current); }, []);
 
     // --- Scheduling styles (injected stylesheet) ---
 
@@ -501,8 +478,8 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
             // 2. Focus it
             editor.commands.focus("end");
-            // 3. Scroll to it (wait for portal mount)
-            setTimeout(() => scrollToPos(editor.state.doc.content.size - 1), 100);
+            // 3. Scroll to it
+            requestAnimationFrame(() => scrollToPos(editor.state.doc.content.size - 1));
         } else {
             // Jump without reply — just focus + scroll to the target
             let targetPos = null;
@@ -515,7 +492,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
             if (targetPos != null) {
                 editor.commands.setTextSelection(targetPos + 1);
                 editor.commands.focus();
-                setTimeout(() => scrollToPos(targetPos + 1), 100);
+                requestAnimationFrame(() => scrollToPos(targetPos + 1));
             }
         }
         if (onJumpHandled) onJumpHandled();
@@ -693,13 +670,11 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         if (!isBrowse && !taskList) {
             // Planning mode: scroll to end. Skip focus if there's a pending jump.
             if (!jumpToTaskIdRef.current) editor.commands.focus("end");
-            // Wait for NodeView portals to mount, then scroll to end.
-            setTimeout(() => {
+            requestAnimationFrame(() => {
                 const editorDom = editor.view?.dom;
                 if (!editorDom) return;
                 const container = editorDom.closest(".editor-content");
                 if (!container) return;
-                // Get cursor position — most reliable way to find the end
                 try {
                     const endPos = editor.state.doc.content.size - 1;
                     const coords = editor.view.coordsAtPos(Math.max(endPos, 0));
@@ -711,7 +686,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 } catch {
                     container.scrollTop = container.scrollHeight;
                 }
-            }, 50);
+            });
         }
     }, [editor, isBrowse]);
 
@@ -850,59 +825,33 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
     // Force a specific NodeView to re-render by touching its ProseMirror attrs.
     // This is needed because NodeViews read task state from tasksRef (a ref),
-    // so they don't re-render when Redux updates — only when PM attrs change.
-    const refreshNodeView = useCallback((taskId) => {
-        if (!editor) return;
-        editor.state.doc.descendants((node, pos) => {
-            if (node.type.name === "paragraph" && node.attrs.taskId === taskId) {
-                // No-op setNodeMarkup with same attrs triggers NodeView re-render
-                const tr = editor.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs });
-                tr.setMeta("sync", true);
-                guard.current = true;
-                editor.view.dispatch(tr);
-                guard.current = false;
-                return false;
-            }
-        });
-    }, [editor]);
-
-    // --- Modal callbacks ---
+    // --- Modal callbacks (optimistic: update Redux immediately, sync to Rust in background) ---
 
     const handleDateChange = useCallback((taskId, field, date) => {
-        const task = tasksRef.current.find(t => t.id === taskId);
-        if (!task) return;
+        const val = date ? date.toISOString() : null;
         if (field === "schedule") {
-            dispatch(upsert({
-                ...task,
-                schedule: date ? date.toISOString() : null,
-                locked: date ? true : false,
-                updated_at: now(),
-            })).then(() => refreshNodeView(taskId));
+            dispatch(updateTask({ id: taskId, changes: { schedule: val, locked: !!date, updated_at: now() } }));
+            txSet(taskId, "schedule", val);
+            txSet(taskId, "locked", !!date);
         } else {
-            dispatch(upsert({
-                ...task,
-                [field]: date ? date.toISOString() : null,
-                updated_at: now(),
-            })).then(() => refreshNodeView(taskId));
+            dispatch(updateTask({ id: taskId, changes: { [field]: val, updated_at: now() } }));
+            txSet(taskId, field, val);
         }
-        if (triggerRebalance) triggerRebalance();
-    }, [dispatch, refreshNodeView]);
+    }, [dispatch]);
 
     const handleRruleChange = useCallback((taskId, rule) => {
-        const task = tasksRef.current.find(t => t.id === taskId);
-        if (!task) return;
-        dispatch(upsert({ ...task, rrule: rule, updated_at: now() }))
-            .then(() => refreshNodeView(taskId));
-    }, [dispatch, refreshNodeView]);
+        dispatch(updateTask({ id: taskId, changes: { rrule: rule, updated_at: now() } }));
+        txSet(taskId, "rrule", rule);
+    }, [dispatch]);
 
     const cycleEffort = useCallback((taskId) => {
         const task = tasksRef.current.find(t => t.id === taskId);
+        console.log("[effort] cycleEffort", taskId, "task=", !!task, "effort=", task?.effort);
         if (!task) return;
-        const next = ((task.effort || 0) + 1) % 6; // 0=none, 1=XS, 2=S, 3=M, 4=L, 5=XL
-        dispatch(upsert({ ...task, effort: next, updated_at: now() }))
-            .then(() => refreshNodeView(taskId));
-        if (triggerRebalance) triggerRebalance();
-    }, [dispatch, triggerRebalance, refreshNodeView]);
+        const next = ((task.effort || 0) + 1) % 5; // 0=none, 1=XS, 2=S, 3=M, 4=L
+        dispatch(updateTask({ id: taskId, changes: { effort: next, updated_at: now() } }));
+        txSet(taskId, "effort", next);
+    }, [dispatch]);
 
     const completeTask = useCallback((taskId) => {
         const task = tasksRef.current.find(t => t.id === taskId);
@@ -910,18 +859,17 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         const ts = now();
 
         if (task.completed_at) {
-            dispatch(upsert({ ...task, completed_at: null, updated_at: ts }))
-                .then(() => refreshNodeView(taskId));
+            dispatch(updateTask({ id: taskId, changes: { completed_at: null, updated_at: ts } }));
+            txSet(taskId, "completed_at", null);
             return;
         }
 
-        dispatch(upsert({ ...task, completed_at: ts, updated_at: ts }))
-            .then(() => refreshNodeView(taskId));
+        dispatch(updateTask({ id: taskId, changes: { completed_at: ts, updated_at: ts } }));
+        txSet(taskId, "completed_at", ts);
 
         // If rrule, create next occurrence via pipeline
         if (task.rrule && editor) {
             try {
-                // Compute the rrule interval by getting two consecutive occurrences from epoch
                 const rule = RRule.fromString(task.rrule);
                 const first = rule.after(new Date(0), true);
                 const second = rule.after(first);
@@ -931,7 +879,6 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 let newDue = null;
 
                 if (task.start_date && task.due_date) {
-                    // Both: shift due forward by interval, compute start by preserving duration
                     const durationMs = new Date(task.due_date) - new Date(task.start_date);
                     newDue = new Date(new Date(task.due_date).getTime() + intervalMs).toISOString();
                     newStart = new Date(new Date(newDue).getTime() - durationMs).toISOString();
@@ -952,7 +899,6 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                         due_date: newDue,
                     };
 
-                    // Insert paragraph with the same content as the completed task
                     try {
                         const parsed = JSON.parse(task.content);
                         const endPos = editor.state.doc.content.size;
@@ -960,7 +906,6 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                         editor.view.dispatch(editor.state.tr.insert(endPos, newNode));
                         editor.commands.focus("end");
                     } catch {
-                        // Fallback: empty paragraph
                         const endPos = editor.state.doc.content.size;
                         editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
                         editor.commands.focus("end");
@@ -968,8 +913,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                 }
             } catch (e) { console.error("rrule error:", e); }
         }
-        if (triggerRebalance) triggerRebalance();
-    }, [dispatch, editor, triggerRebalance, refreshNodeView]);
+    }, [dispatch, editor]);
 
     // --- Keyboard shortcuts ---
 
@@ -1007,19 +951,22 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                         const tid = node?.attrs?.taskId;
                         if (tid && node.textContent === "") {
                             e.preventDefault(); e.stopPropagation();
-                            dispatch(remove(tid));
+                            dispatch(dropTask(tid)); txDelete(tid);
                             visible.current.delete(tid);
                             localChangeRef.current = true;
-                            dispatch(snapshot());
                             return;
                         }
                     }
                 }
             }
             // Block Enter in browse mode — no new task creation
+            // Only if the keypress is inside this editor's DOM
             if (isBrowse && e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
-                e.preventDefault(); e.stopPropagation();
-                return;
+                const editorDom = editor?.view?.dom;
+                if (editorDom && editorDom.contains(e.target)) {
+                    e.preventDefault(); e.stopPropagation();
+                    return;
+                }
             }
             if (matchShortcut(e, shortcuts.FIND)) {
                 e.preventDefault(); e.stopPropagation();
@@ -1097,10 +1044,9 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const toggleLock = useCallback((taskId) => {
         const task = tasksRef.current.find(t => t.id === taskId);
         if (!task) return;
-        dispatch(upsert({ ...task, locked: !task.locked, updated_at: now() }))
-            .then(() => { dispatch(snapshot()); refreshNodeView(taskId); });
-        if (triggerRebalance) triggerRebalance();
-    }, [dispatch, triggerRebalance, refreshNodeView]);
+        dispatch(updateTask({ id: taskId, changes: { locked: !task.locked, updated_at: now() } }));
+        txSet(taskId, "locked", !task.locked);
+    }, [dispatch]);
 
     const openDateModal = useCallback((taskId, field) => {
         setRruleModal(null);
@@ -1193,16 +1139,16 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                         onChange={e => {
                             setFindQuery(e.target.value);
                             setFindIndex(0);
-                            setTimeout(() => {
+                            requestAnimationFrame(() => {
                                 const el = document.querySelector(".find-active");
-                                const container = document.querySelector(".editor-content");
-                                if (el && container) {
+                                const contEl = editor?.view?.dom?.closest(".editor-content");
+                                if (el && contEl) {
                                     const elRect = el.getBoundingClientRect();
-                                    const contRect = container.getBoundingClientRect();
-                                    const target = elRect.top - contRect.top + container.scrollTop - container.clientHeight / 2;
-                                    container.scrollTo({ top: target, behavior: "smooth" });
+                                    const contRect = contEl.getBoundingClientRect();
+                                    const target = elRect.top - contRect.top + contEl.scrollTop - contEl.clientHeight / 2;
+                                    contEl.scrollTo({ top: target, behavior: "smooth" });
                                 }
-                            }, 50);
+                            });
                         }}
                         onKeyDown={e => {
                             if (e.key === "Enter") {

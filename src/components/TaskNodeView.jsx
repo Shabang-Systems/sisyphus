@@ -1,7 +1,8 @@
-import { createContext, useContext, useCallback } from "react";
+import { createContext, useContext, useCallback, useSyncExternalStore } from "react";
 import { NodeViewWrapper, NodeViewContent } from "@tiptap/react";
 import moment from "moment";
 import strings from "@strings";
+import store from "@api/store.js";
 
 // Context for task actions — provided by Editor, consumed by each NodeView instance.
 export const TaskContext = createContext(null);
@@ -19,7 +20,9 @@ function useTaskState(task) {
     const hasDue = !!task?.due_date;
     const hasRrule = !!task?.rrule;
     const effort = task?.effort || 0;
-    const effectiveDue = task?.effective_due ? new Date(task.effective_due) : null;
+    // Use effective_due if available (Rust-computed), fall back to due_date for instant feedback
+    const dueDateRaw = task?.effective_due || task?.due_date;
+    const effectiveDue = dueDateRaw ? new Date(dueDateRaw) : null;
 
     let contentStyle = {};
     if (completed) {
@@ -160,8 +163,13 @@ export function StaticTaskView({ task, onTaskDrag, onJumpToTask }) {
 
 export default function TaskNodeView({ node, editor, getPos }) {
     const taskId = node.attrs.taskId;
+    // Subscribe to Redux store directly — bypasses any Provider tree issues
+    // with Tiptap's portal rendering.
+    const task = useSyncExternalStore(
+        store.subscribe,
+        () => store.getState().tasks.db.find(t => t.id === taskId),
+    );
     const ctx = useContext(TaskContext);
-    const task = ctx?.tasksRef?.current?.find(t => t.id === taskId);
     const state = useTaskState(task);
 
     const stop = useCallback((e) => { e.stopPropagation(); e.preventDefault(); }, []);

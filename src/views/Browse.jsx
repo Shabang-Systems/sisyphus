@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
-import { search, upsert } from "@api/tasks.js";
+import { search, addTask } from "@api/tasks.js";
+import { txCreate } from "@api/sync.js";
 import { v4 as uuid } from "uuid";
 import Editor from "@views/Editor.jsx";
 import strings from "@strings";
@@ -102,15 +103,21 @@ export default function Browse() {
         const normalized = query.replace(/[.*+?^${}()|[\]\\]/g, "");
         if (!normalized) return;
         const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
-        dispatch(upsert({
-            id: uuid(),
+        const id = uuid();
+        const task = {
+            id,
             content: JSON.stringify({ type: "paragraph", content: [{ type: "text", text: normalized }] }),
             position: tasks.length,
             tags: "[]",
-            created_at: ts,
-            updated_at: ts,
-        }));
-        setTimeout(() => dispatch(search(query)), 200);
+            parent_id: null, start_date: null, due_date: null,
+            completed_at: null, rrule: null, effort: 0,
+            schedule: null, locked: false,
+            effective_due: null, is_deferred: false,
+            created_at: ts, updated_at: ts,
+        };
+        dispatch(addTask(task));
+        txCreate(task);
+        dispatch(search(query));
     }, [query, tasks.length, dispatch]);
 
     return (
@@ -170,9 +177,6 @@ export default function Browse() {
                 )}
                 {noResults && (
                     <div className="browse-overlay">
-                        <div className="browse-empty" onClick={createFromSearch}>
-                            <i className="fa-solid fa-plus" />
-                        </div>
                         <div className="browse-empty-hint">{strings.VIEWS__BROWSE_NO_RESULTS}</div>
                     </div>
                 )}

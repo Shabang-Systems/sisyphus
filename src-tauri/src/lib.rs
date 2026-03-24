@@ -4,6 +4,7 @@ pub mod scheduler;
 pub mod energy;
 pub mod nb;
 pub mod calendar;
+pub mod sync;
 
 use state::GlobalState;
 
@@ -38,6 +39,7 @@ pub fn run() {
             commands::set_setting,
             commands::train_nb_tag,
             commands::train_dirichlet,
+            commands::sync_tasks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

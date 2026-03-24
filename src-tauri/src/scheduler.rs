@@ -914,6 +914,17 @@ fn greedy_pack_lambda(
         step += 1;
     }
 
+    // Capacity check: verify no chunk is over-allocated
+    let mut chunk_totals = vec![0.0f64; TOTAL_CHUNKS];
+    for &(_, c, slots) in &schedule {
+        chunk_totals[c] += slots;
+    }
+    for (c, total) in chunk_totals.iter().enumerate() {
+        if *total > cap[c] + 0.1 {
+            eprintln!("CAPACITY VIOLATION: chunk {} has {:.1} slots allocated but cap is {:.1}", c, total, cap[c]);
+        }
+    }
+
     (schedule, trace)
 }
 

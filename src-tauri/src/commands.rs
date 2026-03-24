@@ -1,5 +1,6 @@
 use crate::state::{GlobalState, Task, Sheet};
 use chrono::Timelike;
+use tauri::Emitter;
 use crate::scheduler::{self, SchedulerOutput, TaskInput, SchedulerParams};
 use crate::energy;
 use crate::nb;
@@ -86,6 +87,10 @@ pub async fn reorder(ids: Vec<String>, state: tauri::State<'_, GlobalState>) -> 
 
 #[tauri::command]
 pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<SchedulerOutput, String> {
+    do_compute_schedule(state.inner()).await
+}
+
+async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, String> {
     let pool_guard = state.pool.read().await;
     let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
 
@@ -208,8 +213,10 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
     let params = SchedulerParams::default();
     let output = scheduler::solve(&scheduler_tasks, &dirichlet, &debiased, &params, start_dow, start_h, &capacity_used);
 
-    // Write schedule dates to DB — use the earliest chunk per task
-    let mut earliest: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Write schedule dates to DB — use the chunk where the task has the most slots.
+    // This ensures an L task split across two chunks (e.g. 7+1) shows in the chunk
+    // with the bulk of its work, not the chunk with a 1-slot spillover.
+    let mut best: std::collections::HashMap<String, (f64, String)> = std::collections::HashMap::new();
     for alloc in &output.allocations {
         let day_offset = alloc.day as i64;
         let hour = alloc.hour_start as u32;
@@ -220,12 +227,20 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
                 .map(|t| t.to_rfc3339())
                 .unwrap_or_default()
         };
-        for (tid, _slots) in &alloc.tasks {
-            earliest.entry(tid.clone())
-                .and_modify(|existing| { if sched_date < *existing { *existing = sched_date.clone(); } })
-                .or_insert(sched_date.clone());
+        for (tid, slots) in &alloc.tasks {
+            best.entry(tid.clone())
+                .and_modify(|(prev_slots, prev_date)| {
+                    if *slots > *prev_slots {
+                        *prev_slots = *slots;
+                        *prev_date = sched_date.clone();
+                    }
+                })
+                .or_insert((*slots, sched_date.clone()));
         }
     }
+    let mut earliest: std::collections::HashMap<String, String> = best.into_iter()
+        .map(|(id, (_, date))| (id, date))
+        .collect();
     // Park tasks with garbage duals (ν > 1e10 = solver didn't converge)
     let mut all_parked: Vec<String> = output.parked.clone();
     for info in &output.task_info {
@@ -501,4 +516,41 @@ pub async fn train_dirichlet(
     let pool_guard = state.pool.read().await;
     let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
     energy::update_dirichlet(pool, &observations).await.map_err(|e| e.to_string())
+}
+
+/// Background sync: processes a batch of typed transactions, persists to SQLite,
+/// recomputes computed fields, and emits a 'sync-result' event with changed tasks.
+/// Returns immediately — work happens in a spawned background task.
+#[tauri::command]
+pub async fn sync_tasks(
+    transactions: Vec<crate::sync::Transaction>,
+    seq: u64,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, GlobalState>,
+) -> Result<(), String> {
+    let gs = state.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        match crate::sync::process_transactions(&gs, &transactions).await {
+            Ok((mut changed, needs_reschedule)) => {
+                // If scheduling-relevant fields changed, re-run the solver
+                // and merge all updated tasks into one response.
+                if needs_reschedule {
+                    if let Ok(_) = do_compute_schedule(&gs).await {
+                        if let Ok(all_tasks) = gs.snapshot().await {
+                            changed = all_tasks;
+                        }
+                    }
+                }
+
+                let _ = app.emit("sync-result", serde_json::json!({
+                    "seq": seq,
+                    "changed": changed,
+                }));
+            }
+            Err(e) => {
+                eprintln!("sync_tasks error: {}", e);
+            }
+        }
+    });
+    Ok(())
 }

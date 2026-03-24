@@ -95,7 +95,7 @@ fn compute_effective_due(
 }
 
 // HashMap-based versions for incremental enrichment (O(1) lookups instead of O(n) scans)
-fn compute_effective_due_map(
+pub fn compute_effective_due_map(
     task_id: &str,
     task_map: &std::collections::HashMap<String, Task>,
     children_map: &std::collections::HashMap<String, Vec<String>>,
@@ -125,7 +125,7 @@ fn compute_effective_due_map(
     earliest
 }
 
-fn compute_is_deferred_map(
+pub fn compute_is_deferred_map(
     task_id: &str,
     task_map: &std::collections::HashMap<String, Task>,
     now: &str,
@@ -211,6 +211,7 @@ fn enrich_tasks(tasks: &mut Vec<Task>) {
     }
 }
 
+#[derive(Clone)]
 pub struct GlobalState {
     pub pool: Arc<RwLock<Option<SqlitePool>>>,
     pub path: Arc<Mutex<Option<String>>>,
@@ -242,7 +243,7 @@ impl GlobalState {
     }
 
     /// Collect the affected set for incremental enrichment: the task itself, its ancestors, and its descendants.
-    fn collect_affected(task_id: &str, task_map: &std::collections::HashMap<String, Task>, children_index: &std::collections::HashMap<String, Vec<String>>) -> Vec<String> {
+    pub fn collect_affected(task_id: &str, task_map: &std::collections::HashMap<String, Task>, children_index: &std::collections::HashMap<String, Vec<String>>) -> Vec<String> {
         let mut affected = Vec::new();
         let mut seen = std::collections::HashSet::new();
 

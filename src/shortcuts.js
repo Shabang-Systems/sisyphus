@@ -11,4 +11,9 @@ export default {
     EFFORT: "mod+e",
     COMPLETE: "mod+enter",
     FIND: "mod+f",
+    NAV_1: "mod+1",
+    NAV_2: "mod+2",
+    NAV_3: "mod+3",
+    NAV_4: "mod+4",
+    NAV_5: "mod+5",
 };

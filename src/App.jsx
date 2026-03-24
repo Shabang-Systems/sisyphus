@@ -5,19 +5,73 @@ import store from "@api/store.js";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { rebalance } from "@api/ui.js";
+import { snapshot } from "@api/utils.js";
+import { initSyncListener, flushNow } from "@api/sync.js";
 import Auth from "@views/Auth.jsx";
 import Editor from "@views/Editor.jsx";
 import Browse from "@views/Browse.jsx";
 import Action from "@views/Action.jsx";
 import Completed from "@views/Completed.jsx";
 import Settings from "@views/Settings.jsx";
+import shortcuts from "./shortcuts.js";
 import strings from "@strings";
 import "./App.css";
 
-function RebalanceSpinner() {
-    const rebalancing = useSelector(state => state.ui.rebalancing);
-    if (!rebalancing) return null;
-    return <div className="rebalance-spinner" />;
+function FullScreenOverlay({ label }) {
+    const [quote] = useState(() => strings.SYNC_QUOTES[Math.floor(Math.random() * strings.SYNC_QUOTES.length)]);
+    return (
+        <div className="sync-overlay">
+            <div className="sync-overlay-content">
+                <div className="sync-overlay-boulder" />
+                <div className="sync-overlay-text">
+                    <div className="sync-overlay-label">{label}</div>
+                    <div className="sync-overlay-quote">{quote}</div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function LoadingOverlay() {
+    const ready = useSelector(state => state.ui.ready);
+    if (ready) return null;
+    return <FullScreenOverlay label={strings.SYNC_LOADING} />;
+}
+
+function SyncButton() {
+    const dispatch = useDispatch();
+    const pending = useSelector(state => state.ui.syncPending > 0);
+    const [animating, setAnimating] = useState(false);
+    const [syncing, setSyncing] = useState(false);
+    const timerRef = useRef(null);
+
+    useEffect(() => {
+        if (pending) {
+            setAnimating(true);
+            if (timerRef.current) clearTimeout(timerRef.current);
+        } else if (animating) {
+            timerRef.current = setTimeout(() => setAnimating(false), 600);
+        }
+    }, [pending]);
+
+    const forceSync = useCallback(async () => {
+        if (syncing) return;
+        setSyncing(true);
+        flushNow();
+        await dispatch(rebalance());
+        await dispatch(snapshot());
+        setSyncing(false);
+    }, [dispatch, syncing]);
+
+    return (
+        <>
+            <div className="sync-dot-wrap" onClick={forceSync}>
+                {animating && <div className="sync-dot-pulse" />}
+                <div className="sync-dot-idle" />
+            </div>
+            {syncing && <FullScreenOverlay label={strings.SYNC_RESCHEDULING} />}
+        </>
+    );
 }
 
 // Global hook: idle-debounced rebalance trigger.
@@ -84,10 +138,42 @@ function Sidebar({ activeView, onViewChange }) {
 function AppInner() {
     const triggerRebalance = useRebalance();
     const [isReady, setIsReady] = useState(false);
+
+    // Initialize background sync listener (Tauri events from Rust)
+    useEffect(() => { initSyncListener(); }, []);
     const [activeView, setActiveView] = useState("action");
     const [jumpToTaskId, setJumpToTaskId] = useState(null);
 
     const [replyToTaskId, setReplyToTaskId] = useState(null);
+
+    const views = ["action", "editor", "browse", "completed", "settings"];
+
+    useEffect(() => {
+        function matchShortcut(e, shortcut) {
+            const parts = shortcut.split("+");
+            const key = parts[parts.length - 1].toLowerCase();
+            const needsMod = parts.includes("mod");
+            const needsShift = parts.includes("shift");
+            const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+            const mod = isMac ? e.metaKey : e.ctrlKey;
+            return mod === needsMod && e.shiftKey === needsShift && e.key.toLowerCase() === key;
+        }
+
+        function onKeyDown(e) {
+            const navShortcuts = [shortcuts.NAV_1, shortcuts.NAV_2, shortcuts.NAV_3, shortcuts.NAV_4, shortcuts.NAV_5];
+            for (let i = 0; i < navShortcuts.length; i++) {
+                if (matchShortcut(e, navShortcuts[i])) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setActiveView(views[i]);
+                    return;
+                }
+            }
+        }
+
+        document.addEventListener("keydown", onKeyDown, true);
+        return () => document.removeEventListener("keydown", onKeyDown, true);
+    }, []);
 
     // Jump to a task in Planning view from any page
     const jumpToTask = useCallback((taskId) => {
@@ -128,7 +214,8 @@ function AppInner() {
             {isReady ? (
                 <>
                     <Sidebar activeView={activeView} onViewChange={setActiveView} />
-                    <RebalanceSpinner />
+                    <SyncButton />
+                    <LoadingOverlay />
                     {activeView === "action" && <Action onJumpToTask={jumpToTask} triggerRebalance={triggerRebalance} />}
                     {activeView === "editor" && <Editor jumpToTaskId={jumpToTaskId} replyToTaskId={replyToTaskId} onJumpHandled={() => { setJumpToTaskId(null); setReplyToTaskId(null); }} triggerRebalance={triggerRebalance} />}
                     {activeView === "browse" && <Browse onJumpToTask={jumpToTask} />}

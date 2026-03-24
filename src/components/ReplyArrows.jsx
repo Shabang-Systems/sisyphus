@@ -69,13 +69,9 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
         buildArrows();
     }, [updatePositions, buildArrows]);
 
-    // On tasks/collapse change: update positions after portals mount.
-    // Double refresh: once at 80ms for fast draws, once at 300ms to catch
-    // late-mounting portals (e.g. reply from Action view remounts Editor).
+    // On tasks/collapse change: update positions and rebuild arrows.
     useEffect(() => {
-        const t1 = setTimeout(refresh, 80);
-        const t2 = setTimeout(refresh, 300);
-        return () => { clearTimeout(t1); clearTimeout(t2); };
+        refresh();
     }, [tasks, collapsedRoot, refresh]);
 
     // On scroll: just rebuild arrows from shadow state (positions are relative, no DOM read needed)

@@ -79,7 +79,29 @@ const reorder = createAsyncThunk('tasks/reorder', async (ids) => {
 const tasksSlice = createSlice({
     name: "tasks",
     initialState: { db: [], loading: true, searchResults: null, searchQuery: "" },
-    reducers: {},
+    reducers: {
+        // Optimistic local update — instant, no Rust roundtrip
+        updateTask(state, { payload: { id, changes } }) {
+            const task = state.db.find(t => t.id === id);
+            if (task) Object.assign(task, changes);
+        },
+        // Optimistic local insert (client-side UUID)
+        addTask(state, { payload: task }) {
+            state.db.push(task);
+        },
+        // Merge computed fields from Rust background sync
+        mergeSyncResult(state, { payload: tasks }) {
+            for (const updated of tasks) {
+                const idx = state.db.findIndex(t => t.id === updated.id);
+                if (idx >= 0) state.db[idx] = { ...state.db[idx], ...updated };
+                else state.db.push(updated);
+            }
+        },
+        // Optimistic remove
+        dropTask(state, { payload: id }) {
+            state.db = state.db.filter(t => t.id !== id);
+        },
+    },
     extraReducers: (builder) => {
         builder
             .addCase(snapshot.fulfilled, (state, { payload }) => {
@@ -144,5 +166,7 @@ const tasksSlice = createSlice({
     },
 });
 
+const { updateTask, addTask, mergeSyncResult, dropTask } = tasksSlice.actions;
 export { createTask, upsert, batchUpsert, remove, setParent, search, reorder, insertTaskAt };
+export { updateTask, addTask, mergeSyncResult, dropTask };
 export default tasksSlice.reducer;

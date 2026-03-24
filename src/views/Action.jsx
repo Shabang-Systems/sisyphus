@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
-import { upsert } from "@api/tasks.js";
+import { updateTask } from "@api/tasks.js";
 import { snapshot } from "@api/utils.js";
+import { txSet } from "@api/sync.js";
 import moment from "moment";
 import strings from "@strings";
 import Editor from "@views/Editor.jsx";
@@ -78,13 +79,10 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
                 d.setHours(dt.chunkIdx * 4, 0, 0, 0);
                 const task = taskMap.current.get(tid);
                 if (task) {
-                    dispatch(upsert({
-                        ...task,
-                        schedule: d.toISOString(),
-                        locked: true,
-                        updated_at: now(),
-                    })).then(() => dispatch(snapshot()));
-                    if (triggerRebalance) triggerRebalance();
+                    const sched = d.toISOString();
+                    dispatch(updateTask({ id: tid, changes: { schedule: sched, locked: true, updated_at: now() } }));
+                    txSet(tid, "schedule", sched);
+                    txSet(tid, "locked", true);
                 }
             }
         };
@@ -106,6 +104,7 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
         const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
         const result = new Map(); // key: "day:chunk"
         const daySet = new Set();
+        const overdue = [];
 
         for (const task of allTasks) {
             if (!task.schedule) continue;
@@ -114,7 +113,7 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
 
             const schedDate = new Date(task.schedule);
             const dayDiff = Math.floor((schedDate - todayStart) / 86400000);
-            if (dayDiff < 0) continue;
+            if (dayDiff < 0) { overdue.push(task); continue; }
             const chunkIdx = Math.floor(schedDate.getHours() / 4);
             const key = `${dayDiff}:${chunkIdx}`;
 
@@ -147,6 +146,14 @@ export default function Action({ onJumpToTask, triggerRebalance }) {
         // Build ordered list
         const days = [...daySet].sort((a, b) => a - b);
         const ordered = [];
+
+        // Overdue tasks: scheduled before today
+        if (overdue.length > 0) {
+            overdue.sort((a, b) => a.position - b.position);
+            ordered.push({ type: "day", dayDiff: -1, label: strings.VIEWS__ACTION_OVERDUE });
+            ordered.push({ type: "chunk", dayDiff: -1, chunkIdx: 0, label: "", tasks: overdue });
+        }
+
         for (const day of days) {
             ordered.push({ type: "day", dayDiff: day, label: dayLabel(day) });
             const dayChunks = [...result.values()]

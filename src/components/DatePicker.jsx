@@ -101,6 +101,7 @@ export default function DatePicker({ onDate, onDone, focus, initialDate }) {
                 <input ref={dateField} className="datepicker-input"
                     placeholder={date ? strings.COMPONENTS__DATEPICKER_TIME : strings.COMPONENTS__DATEPICKER_DATETIME}
                     value={timeString}
+                    autoComplete="off" autoCorrect="off" spellCheck={false}
                     onChange={e => setTimeString(e.target.value)}
                     onKeyDown={e => {
                         if (e.key === "Enter") {
