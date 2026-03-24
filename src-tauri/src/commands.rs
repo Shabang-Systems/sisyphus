@@ -85,6 +85,49 @@ pub async fn reorder(ids: Vec<String>, state: tauri::State<'_, GlobalState>) -> 
     state.reorder(&ids).await.map_err(|e| e.to_string())
 }
 
+/// Returns cached calendar busy grid (14×6 = 84 values). Fetches + caches if empty.
+#[tauri::command]
+pub async fn get_calendar_freebusy(state: tauri::State<'_, GlobalState>) -> Result<Vec<f64>, String> {
+    // Return from cache if available
+    {
+        let cache = state.cal_grid_cache.read().await;
+        if let Some(ref grid) = *cache {
+            return Ok(grid.clone());
+        }
+    }
+
+    // Cache miss — fetch, cache, and return
+    let grid = fetch_and_cache_cal_grid(state.inner()).await;
+    Ok(grid)
+}
+
+/// Fetch calendar busy blocks, compute the 14×6 absolute grid, and store in cache.
+async fn fetch_and_cache_cal_grid(state: &GlobalState) -> Vec<f64> {
+    let pool_guard = state.pool.read().await;
+    let pool = match pool_guard.as_ref() {
+        Some(p) => p,
+        None => {
+            let empty = vec![0.0f64; 14 * 6];
+            *state.cal_grid_cache.write().await = Some(empty.clone());
+            return empty;
+        }
+    };
+
+    let cal_urls_json = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'calendars'")
+        .fetch_optional(pool).await.unwrap_or(None).unwrap_or_else(|| "[]".to_string());
+    let cal_urls: Vec<String> = serde_json::from_str(&cal_urls_json).unwrap_or_default();
+
+    let grid = if cal_urls.is_empty() {
+        vec![0.0f64; 14 * 6]
+    } else {
+        let blocks = calendar::fetch_busy_blocks(&cal_urls).await;
+        calendar::busy_to_grid(&blocks)
+    };
+
+    *state.cal_grid_cache.write().await = Some(grid.clone());
+    grid
+}
+
 #[tauri::command]
 pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<SchedulerOutput, String> {
     do_compute_schedule(state.inner()).await
@@ -204,6 +247,11 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
         for i in 0..scheduler::TOTAL_CHUNKS {
             capacity_used[i] += cal_used[i];
         }
+        // Update the absolute grid cache for get_calendar_freebusy
+        let grid = calendar::busy_to_grid(&blocks);
+        *state.cal_grid_cache.write().await = Some(grid);
+    } else {
+        *state.cal_grid_cache.write().await = Some(vec![0.0f64; 14 * 6]);
     }
 
     let params = SchedulerParams::default();

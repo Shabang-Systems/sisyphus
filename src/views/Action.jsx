@@ -42,6 +42,12 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
     const loading = useSelector(state => state.tasks.loading);
     useEffect(() => { if (loading) dispatch(snapshot()); }, [loading, dispatch]);
 
+    // Fetch calendar freebusy once on mount (returned from Rust cache, fast)
+    const [calBusy, setCalBusy] = useState(null);
+    useEffect(() => {
+        invoke("get_calendar_freebusy").then(setCalBusy).catch(() => setCalBusy(null));
+    }, []);
+
     // Drag to reschedule
     const handleTaskDrag = useCallback((taskId, e) => {
         const task = taskMap.current.get(taskId);
@@ -268,10 +274,12 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
             )}
 
             {dragState && (() => {
-                // Compute load per cell and find current task's schedule
+                // Effort → slots mapping (mirrors Rust effort_to_slots)
+                const effortSlots = [2, 1, 2, 4, 8, 16]; // index = effort value, 0 defaults to S=2
+
+                // Compute task load (in slots) per cell and find current task's schedule
                 const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
                 const loadMap = new Map();
-                let maxLoad = 1;
                 let currentDay = -1, currentChunk = -1;
 
                 for (const t of allTasks) {
@@ -281,11 +289,10 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                     if (dd < 0 || dd >= 14) continue;
                     const ci = Math.floor(sd.getHours() / 4);
                     const key = `${dd}:${ci}`;
-                    const effort = t.effort || 2;
-                    loadMap.set(key, (loadMap.get(key) || 0) + effort);
+                    const slots = effortSlots[t.effort || 0];
+                    loadMap.set(key, (loadMap.get(key) || 0) + slots);
                     if (t.id === dragState.taskId) { currentDay = dd; currentChunk = ci; }
                 }
-                for (const v of loadMap.values()) { if (v > maxLoad) maxLoad = v; }
 
                 return (
                     <div className="action-drop-overlay" onMouseMove={(e) => {
@@ -306,12 +313,35 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                                 {CHUNK_LABELS.map((_, chunkIdx) => {
                                     const isCurrent = dayIdx === currentDay && chunkIdx === currentChunk;
                                     const isActive = dropTarget?.day === dayIdx && dropTarget?.chunkIdx === chunkIdx;
-                                    const load = loadMap.get(`${dayIdx}:${chunkIdx}`) || 0;
-                                    const intensity = Math.min(load / maxLoad, 1);
-                                    const bg = isActive ? undefined
-                                        : isCurrent ? "rgba(55, 165, 190, 0.15)"
-                                        : load > 0 ? `rgba(242, 114, 0, ${0.06 + intensity * 0.18})`
-                                        : undefined;
+
+                                    // Total fill: calendar busy + task load, relative to chunk capacity (8 slots)
+                                    const calIdx = dayIdx * 6 + chunkIdx;
+                                    const busy = calBusy ? (calBusy[calIdx] || 0) : 0;
+                                    const available = 8 - busy;
+                                    const taskLoad = loadMap.get(`${dayIdx}:${chunkIdx}`) || 0;
+
+                                    // Fill = (calendar + tasks) / capacity. Capped at 1.
+                                    // If 0 available (all calendar), max intensity.
+                                    const fill = available <= 0
+                                        ? 1
+                                        : Math.min((busy + taskLoad) / 8, 1);
+
+                                    // Grey → Yellow: lerp from rgb(160,160,160) to rgb(240,200,50)
+                                    const r = Math.round(160 + fill * (240 - 160));
+                                    const g = Math.round(160 + fill * (200 - 160));
+                                    const b = Math.round(160 + fill * (50 - 160));
+
+                                    let bg;
+                                    if (isActive) {
+                                        bg = undefined;
+                                    } else if (isCurrent) {
+                                        bg = "rgba(55, 165, 190, 0.15)";
+                                    } else if (fill > 0) {
+                                        bg = `rgba(${r}, ${g}, ${b}, ${0.08 + fill * 0.22})`;
+                                    } else {
+                                        bg = undefined;
+                                    }
+
                                     return (
                                         <div
                                             key={chunkIdx}

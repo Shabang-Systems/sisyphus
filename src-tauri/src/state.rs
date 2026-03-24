@@ -219,6 +219,8 @@ pub struct GlobalState {
     pub task_cache: Arc<RwLock<std::collections::HashMap<String, Task>>>,
     /// Parent→children index for fast subtree traversal.
     pub children_index: Arc<RwLock<std::collections::HashMap<String, Vec<String>>>>,
+    /// Cached calendar freebusy grid: 84 values (14 days × 6 chunks/day), updated by compute_schedule.
+    pub cal_grid_cache: Arc<RwLock<Option<Vec<f64>>>>,
 }
 
 impl GlobalState {
@@ -228,6 +230,7 @@ impl GlobalState {
             path: Arc::new(Mutex::new(None)),
             task_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
             children_index: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            cal_grid_cache: Arc::new(RwLock::new(None)),
         }
     }
 

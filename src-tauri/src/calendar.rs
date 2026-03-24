@@ -105,6 +105,36 @@ pub fn busy_to_capacity(blocks: &[BusyBlock], _start_h: usize) -> Vec<f64> {
     used
 }
 
+/// Convert busy blocks into an absolute 14×6 grid (day × chunk-of-day).
+/// Index = day * 6 + chunk_of_day. Each value is 0.0–8.0 slots.
+pub fn busy_to_grid(blocks: &[BusyBlock]) -> Vec<f64> {
+    let mut grid = vec![0.0f64; 14 * 6];
+    let now = Local::now();
+    let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
+
+    for block in blocks {
+        let mut cursor = block.start;
+        while cursor < block.end {
+            let day_start = cursor.date_naive().and_hms_opt(0, 0, 0).unwrap();
+            let day_diff = (day_start - today_start).num_days();
+            if day_diff >= 0 && day_diff < 14 {
+                let chunk_of_day = cursor.hour() as usize / 4;
+                let idx = day_diff as usize * 6 + chunk_of_day;
+                if idx < grid.len() {
+                    grid[idx] += 1.0;
+                }
+            }
+            cursor = cursor + Duration::minutes(30);
+        }
+    }
+
+    for v in &mut grid {
+        *v = v.min(8.0);
+    }
+
+    grid
+}
+
 use chrono::TimeZone;
 
 fn parse_ical_dt(s: &str) -> Option<DateTime<Local>> {

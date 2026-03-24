@@ -33,6 +33,7 @@ pub fn run() {
             commands::list_tags,
             commands::reorder,
             commands::compute_schedule,
+            commands::get_calendar_freebusy,
             commands::accept_task_schedule,
             commands::insert_task_at,
             commands::get_setting,
