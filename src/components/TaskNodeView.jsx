@@ -204,8 +204,7 @@ export default function TaskNodeView({ node, editor, getPos }) {
                 <div className="task-divider-line" />
             </div>
             <div className="task-row">
-                <span className="task-drag-handle" contentEditable={false} onMouseDown={onDragHandle}
-                    data-tooltip-id="rootp" data-tooltip-content={strings.TOOLTIPS.ACTION_DRAG}>
+                <span className="task-drag-handle" contentEditable={false} onMouseDown={onDragHandle}>
                     <i className="fa-solid fa-grip-vertical" />
                 </span>
                 <span className="task-check task-sidebar-btn" contentEditable={false} onClick={onCheck}

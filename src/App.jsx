@@ -217,7 +217,7 @@ function AppInner() {
 
     return (
         <>
-            <Tooltip id="rootp" anchorSelect="[data-tooltip-id='rootp']" delayShow={0} delayHide={0} />
+            <Tooltip id="rootp" anchorSelect="[data-tooltip-id='rootp']" delayShow={600} delayHide={0} />
             {isReady ? (
                 <>
                     <Sidebar activeView={activeView} onViewChange={setActiveView} />
