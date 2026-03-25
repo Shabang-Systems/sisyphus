@@ -319,58 +319,60 @@
     z-index: 10000;
     background: rgba(247, 247, 247, 0.97);
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 40px;
-    gap: 0;
+    padding: 32px 24px;
 }
 
-.action-drop-header {
-    display: grid;
-    grid-template-columns: 90px repeat(6, 1fr);
-    gap: 3px;
+.action-drop-weeks {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
     width: 100%;
     max-width: 560px;
-    margin-bottom: 4px;
+}
+
+.action-drop-grid {
+    display: grid;
+    grid-template-columns: 56px repeat(7, 1fr);
+    gap: 3px;
 }
 
 .action-drop-col-label {
     font-size: 9px;
     color: var(--gray-3);
     text-align: center;
-    padding: 2px 0;
+    line-height: 1.3;
+    padding: 0 0 2px;
+    white-space: nowrap;
 }
 
-.action-drop-row {
-    display: grid;
-    grid-template-columns: 90px repeat(6, 1fr);
-    gap: 3px;
-    width: 100%;
-    max-width: 560px;
-    margin-bottom: 3px;
+.action-drop-col-label.today {
+    color: var(--blue);
+    font-weight: 500;
 }
 
 .action-drop-row-label {
     font-size: 10px;
     color: var(--gray-4);
-}
-
-.action-drop-row-label.today {
-    color: var(--blue);
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    padding-right: 8px;
+    padding-right: 6px;
     white-space: nowrap;
 }
 
 .action-drop-cell {
     background: var(--gray-1);
     border-radius: 3px;
-    height: 28px;
+    min-height: 32px;
     cursor: pointer;
     transition: background 0.1s ease;
+}
+
+.action-drop-cell.empty {
+    background: transparent;
+    cursor: default;
 }
 
 .action-drop-cell.current {

@@ -301,6 +301,83 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                     if (t.id === dragState.taskId) { currentDay = dd; currentChunk = ci; }
                 }
 
+                // Compute weeks: 7-day blocks starting from Monday
+                const today = new Date();
+                const todayDow = today.getDay(); // 0=Sun
+                // Days until next Monday (or 0 if today is Monday)
+                const daysToMon = todayDow === 0 ? 1 : todayDow === 1 ? 0 : 8 - todayDow;
+                // First week: today .. Sunday. Subsequent weeks: Mon .. Sun.
+                const totalDays = chunkCfg.horizon_days;
+                const firstWeekLen = Math.min(daysToMon > 0 ? daysToMon : 7, totalDays);
+                const weeks = [];
+                // First partial/full week
+                const w0 = [];
+                // Pad leading empty cells so the first week aligns to weekday columns
+                const startCol = todayDow === 0 ? 6 : todayDow - 1; // 0=Mon
+                for (let p = 0; p < startCol; p++) w0.push(null);
+                for (let d = 0; d < firstWeekLen; d++) w0.push(d);
+                while (w0.length < 7) w0.push(null); // pad trailing
+                weeks.push(w0);
+                // Remaining full weeks
+                let dayOff = firstWeekLen;
+                while (dayOff < totalDays) {
+                    const wk = [];
+                    for (let d = 0; d < 7; d++) {
+                        wk.push(dayOff < totalDays ? dayOff : null);
+                        dayOff++;
+                    }
+                    weeks.push(wk);
+                }
+
+                const shortDay = (dayIdx) => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + dayIdx);
+                    return `${d.getMonth()+1}/${d.getDate()}`;
+                };
+                const DOW_HEAD = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+                const cellFor = (dayIdx, chunkIdx) => {
+                    if (dayIdx === null) return (
+                        <div key={`empty-${chunkIdx}-${Math.random()}`} className="action-drop-cell empty" />
+                    );
+                    const isCurrent = dayIdx === currentDay && chunkIdx === currentChunk;
+                    const isActive = dropTarget?.day === dayIdx && dropTarget?.chunkIdx === chunkIdx;
+
+                    const calIdx = dayIdx * chunkCfg.chunks_per_day + chunkIdx;
+                    const busy = calBusy ? (calBusy[calIdx] || 0) : 0;
+                    const available = slotsPerChunk - busy;
+                    const taskLoad = loadMap.get(`${dayIdx}:${chunkIdx}`) || 0;
+
+                    const fill = available <= 0
+                        ? 1
+                        : Math.min((busy + taskLoad) / slotsPerChunk, 1);
+
+                    const r = Math.round(160 + fill * (240 - 160));
+                    const g = Math.round(160 + fill * (200 - 160));
+                    const b = Math.round(160 + fill * (50 - 160));
+
+                    let bg;
+                    if (isActive) {
+                        bg = undefined;
+                    } else if (isCurrent) {
+                        bg = "rgba(55, 165, 190, 0.15)";
+                    } else if (fill > 0) {
+                        bg = `rgba(${r}, ${g}, ${b}, ${0.08 + fill * 0.22})`;
+                    } else {
+                        bg = undefined;
+                    }
+
+                    return (
+                        <div
+                            key={dayIdx}
+                            className={`action-drop-cell${isActive ? " active" : ""}${isCurrent ? " current" : ""}`}
+                            style={bg ? { background: bg } : undefined}
+                            onMouseEnter={() => handleDropEnter(dayIdx, chunkIdx)}
+                            onMouseLeave={handleDropClear}
+                        />
+                    );
+                };
+
                 return (
                     <div className="action-drop-overlay" onMouseMove={(e) => {
                         if (!e.target.classList.contains("action-drop-cell")) {
@@ -308,59 +385,25 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                             setDropTarget(null);
                         }
                     }}>
-                        <div className="action-drop-header">
-                            <div />
-                            {chunkLabels.map((label, i) => (
-                                <div key={i} className="action-drop-col-label">{label}</div>
+                        <div className="action-drop-weeks">
+                            {weeks.map((week, wi) => (
+                                <div key={wi} className="action-drop-grid">
+                                    {/* Corner */}
+                                    <div />
+                                    {/* Day column headers */}
+                                    {week.map((dayIdx, di) => (
+                                        <div key={di} className={`action-drop-col-label${dayIdx === 0 ? " today" : ""}`}>
+                                            {wi === 0 ? DOW_HEAD[di] : ""}{dayIdx !== null ? <><br/>{shortDay(dayIdx)}</> : ""}
+                                        </div>
+                                    ))}
+                                    {/* Time rows */}
+                                    {chunkLabels.map((label, chunkIdx) => (<>
+                                        <div key={`l-${chunkIdx}`} className="action-drop-row-label">{label}</div>
+                                        {week.map((dayIdx, di) => cellFor(dayIdx, chunkIdx))}
+                                    </>))}
+                                </div>
                             ))}
                         </div>
-                        {[...Array(chunkCfg.horizon_days)].map((_, dayIdx) => (
-                            <div key={dayIdx} className="action-drop-row">
-                                <div className={`action-drop-row-label${dayIdx === 0 ? " today" : ""}`}>{dayLabel(dayIdx)}</div>
-                                {chunkLabels.map((_, chunkIdx) => {
-                                    const isCurrent = dayIdx === currentDay && chunkIdx === currentChunk;
-                                    const isActive = dropTarget?.day === dayIdx && dropTarget?.chunkIdx === chunkIdx;
-
-                                    // Total fill: calendar busy + task load, relative to chunk capacity
-                                    const calIdx = dayIdx * chunkCfg.chunks_per_day + chunkIdx;
-                                    const busy = calBusy ? (calBusy[calIdx] || 0) : 0;
-                                    const available = slotsPerChunk - busy;
-                                    const taskLoad = loadMap.get(`${dayIdx}:${chunkIdx}`) || 0;
-
-                                    // Fill = (calendar + tasks) / capacity. Capped at 1.
-                                    // If 0 available (all calendar), max intensity.
-                                    const fill = available <= 0
-                                        ? 1
-                                        : Math.min((busy + taskLoad) / slotsPerChunk, 1);
-
-                                    // Grey → Yellow: lerp from rgb(160,160,160) to rgb(240,200,50)
-                                    const r = Math.round(160 + fill * (240 - 160));
-                                    const g = Math.round(160 + fill * (200 - 160));
-                                    const b = Math.round(160 + fill * (50 - 160));
-
-                                    let bg;
-                                    if (isActive) {
-                                        bg = undefined;
-                                    } else if (isCurrent) {
-                                        bg = "rgba(55, 165, 190, 0.15)";
-                                    } else if (fill > 0) {
-                                        bg = `rgba(${r}, ${g}, ${b}, ${0.08 + fill * 0.22})`;
-                                    } else {
-                                        bg = undefined;
-                                    }
-
-                                    return (
-                                        <div
-                                            key={chunkIdx}
-                                            className={`action-drop-cell${isActive ? " active" : ""}${isCurrent ? " current" : ""}`}
-                                            style={bg ? { background: bg } : undefined}
-                                            onMouseEnter={() => handleDropEnter(dayIdx, chunkIdx)}
-                                            onMouseLeave={handleDropClear}
-                                        />
-                                    );
-                                })}
-                            </div>
-                        ))}
                     </div>
                 );
             })()}
