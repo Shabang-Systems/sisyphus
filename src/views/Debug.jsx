@@ -5,36 +5,45 @@ import { snapshot } from "@api/utils.js";
 import strings from "@strings";
 import "./Debug.css";
 
-const CHUNK_HOURS = ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"];
 const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function fmtSlots(s) { return `${s.toFixed(1)} slots (${(s * 0.5).toFixed(1)}h)`; }
 
-function chunkLabel(chunk, horizonStart) {
-    // Fallback: compute from raw chunk index (used for raw priorities display)
-    const d = Math.floor(chunk / 6);
-    const h = chunk % 6;
+function chunkLabel(chunk, horizonStart, chunksPerDay) {
+    const d = Math.floor(chunk / chunksPerDay);
+    const h = chunk % chunksPerDay;
     const date = new Date(horizonStart);
     date.setDate(date.getDate() + d);
     const dow = DOW_LABELS[(date.getDay() + 6) % 7];
     return `${dow} ${date.getMonth()+1}/${date.getDate()} c${chunk}`;
 }
 
-function allocLabel(day, hourStart, horizonStart) {
-    // Use pre-computed day offset and hour from Rust
+function allocLabel(day, hourStart, horizonStart, hoursPerChunk) {
     const date = new Date(horizonStart);
     date.setDate(date.getDate() + day);
     const dow = DOW_LABELS[(date.getDay() + 6) % 7];
-    const endHour = hourStart + 4;
+    const endHour = hourStart + hoursPerChunk;
     return `${dow} ${date.getMonth()+1}/${date.getDate()} ${String(hourStart).padStart(2,"0")}:00–${String(endHour).padStart(2,"0")}:00`;
 }
 
 export default function Debug() {
     const dispatch = useDispatch();
     const [schedule, setSchedule] = useState(null);
+    const [chunkCfg, setChunkCfg] = useState({ chunks_per_day: 6, horizon_days: 14, labels: strings.CHUNK_LABELS });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [horizonStart] = useState(() => new Date());
+
+    useEffect(() => {
+        invoke("get_chunk_config").then(setChunkCfg).catch(() => {});
+    }, []);
+
+    const chunksPerDay = chunkCfg.chunks_per_day;
+    const hoursPerChunk = 24 / chunksPerDay;
+    const chunkHours = Array.from({ length: chunksPerDay }, (_, i) => {
+        const h = i * hoursPerChunk;
+        return `${String(h).padStart(2, "0")}:00`;
+    });
 
     const solve = useCallback(async () => {
         setLoading(true);
@@ -51,8 +60,8 @@ export default function Debug() {
     useEffect(() => { solve(); }, [solve]);
 
     const acceptTask = useCallback(async (taskId, chunkIdx) => {
-        const dayOffset = Math.floor(chunkIdx / 6);
-        const hourStart = (chunkIdx % 6) * 4;
+        const dayOffset = Math.floor(chunkIdx / chunksPerDay);
+        const hourStart = (chunkIdx % chunksPerDay) * hoursPerChunk;
         const d = new Date();
         d.setDate(d.getDate() + dayOffset);
         d.setHours(hourStart, 0, 0, 0);
@@ -61,7 +70,7 @@ export default function Debug() {
             dispatch(snapshot());
             solve();
         } catch (e) { setError(String(e)); }
-    }, [dispatch, solve]);
+    }, [dispatch, solve, chunksPerDay, hoursPerChunk]);
 
     return (
         <div className="debug">
@@ -122,10 +131,10 @@ export default function Debug() {
                     {/* ── Dirichlet Energy Model ── */}
                     {schedule.tag_set?.length > 0 && (() => {
                         const startH = schedule.start_h || 0;
-                        const remainToday = 6 - startH;
+                        const remainToday = chunksPerDay - startH;
                         const toChunk = (dayIdx, hIdx) => {
                             if (dayIdx === 0) return hIdx - startH;
-                            return remainToday + (dayIdx - 1) * 6 + hIdx;
+                            return remainToday + (dayIdx - 1) * chunksPerDay + hIdx;
                         };
                         const dayLabel = (dayIdx) => {
                             const d = new Date(horizonStart);
@@ -136,12 +145,12 @@ export default function Debug() {
                             <div className="debug-energy-grid">
                                 <div className="debug-energy-grid-header">
                                     <div className="debug-energy-grid-corner" />
-                                    {CHUNK_HOURS.map((h, i) => <div key={i} className="debug-energy-grid-col">{h}</div>)}
+                                    {chunkHours.map((h, i) => <div key={i} className="debug-energy-grid-col">{h}</div>)}
                                 </div>
                                 {[...Array(schedule.horizon_days)].map((_, dayIdx) => (
                                     <div key={dayIdx} className="debug-energy-grid-row">
                                         <div className="debug-energy-grid-row-label">{dayLabel(dayIdx)}</div>
-                                        {CHUNK_HOURS.map((_, hIdx) => {
+                                        {chunkHours.map((_, hIdx) => {
                                             const ci = toChunk(dayIdx, hIdx);
                                             if (ci < 0) return <div key={hIdx} className="debug-energy-grid-cell past" />;
                                             const val = ci < data.length ? data[ci] : 0;
@@ -272,7 +281,7 @@ export default function Debug() {
                         {schedule.allocations.map(a => (
                             <div key={a.chunk} className="debug-alloc-block">
                                 <div className="debug-alloc-header">
-                                    {allocLabel(a.day, a.hour_start, horizonStart)}
+                                    {allocLabel(a.day, a.hour_start, horizonStart, hoursPerChunk)}
                                 </div>
                                 {a.tasks.map(([tid, slots]) => {
                                     const info = schedule.task_info.find(t => t.id === tid);
@@ -326,7 +335,7 @@ export default function Debug() {
                             <div className="debug-dual-group">
                                 <h4>μ (time prices)</h4>
                                 {schedule.duals.time_prices.map(([c, mu]) => (
-                                    <span key={c} className="debug-dual-item">{chunkLabel(c, horizonStart)}: {mu.toFixed(3)}</span>
+                                    <span key={c} className="debug-dual-item">{chunkLabel(c, horizonStart, chunksPerDay)}: {mu.toFixed(3)}</span>
                                 ))}
                             </div>
                         )}
@@ -334,7 +343,7 @@ export default function Debug() {
                             <div className="debug-dual-group">
                                 <h4>η (energy prices)</h4>
                                 {schedule.duals.energy_prices.map(([c, tag, eta], i) => (
-                                    <span key={i} className="debug-dual-item">{chunkLabel(c, horizonStart)} [{tag}]: {eta.toFixed(3)}</span>
+                                    <span key={i} className="debug-dual-item">{chunkLabel(c, horizonStart, chunksPerDay)} [{tag}]: {eta.toFixed(3)}</span>
                                 ))}
                             </div>
                         )}
@@ -362,7 +371,7 @@ export default function Debug() {
                             <div className="debug-raw" style={{maxHeight: 200}}>
                                 {schedule.raw_priorities.map(([name, c, v], i) => (
                                     <div key={i} className="debug-dual-item">
-                                        {name} @ {chunkLabel(c, horizonStart)}: {v.toFixed(3)}
+                                        {name} @ {chunkLabel(c, horizonStart, chunksPerDay)}: {v.toFixed(3)}
                                     </div>
                                 ))}
                             </div>
@@ -382,7 +391,7 @@ export default function Debug() {
                                         <tr key={i}>
                                             <td>{step}</td>
                                             <td>{name}</td>
-                                            <td>{chunkLabel(c, horizonStart)}</td>
+                                            <td>{chunkLabel(c, horizonStart, chunksPerDay)}</td>
                                             <td>{fmtSlots(slots)}</td>
                                         </tr>
                                     ))}
@@ -418,7 +427,7 @@ export default function Debug() {
                             } else {
                                 for (const a of s.allocations) {
                                     lines.push("");
-                                    lines.push(`  ┌─ ${allocLabel(a.day, a.hour_start, horizonStart)} ─────────────`);
+                                    lines.push(`  ┌─ ${allocLabel(a.day, a.hour_start, horizonStart, hoursPerChunk)} ─────────────`);
                                     for (const [tid, slots] of a.tasks) {
                                         const info = s.task_info.find(t => t.id === tid);
                                         const name = pad(info?.name || tid.slice(0, 8), 40);
@@ -436,11 +445,11 @@ export default function Debug() {
                                 lines.push("  DIRICHLET ENERGY MODEL");
                                 lines.push("══════════════════════════════════════════════════════════════════════════════════");
                                 const startH = s.start_h || 0;
-                                const remToday = 6 - startH;
-                                const colHead = CHUNK_HOURS.map(h => rpad(h, 8)).join("");
+                                const remToday = chunksPerDay - startH;
+                                const colHead = chunkHours.map(h => rpad(h, 8)).join("");
                                 const toCI = (d, hIdx) => {
                                     if (d === 0) return hIdx - startH;
-                                    return remToday + (d - 1) * 6 + hIdx;
+                                    return remToday + (d - 1) * chunksPerDay + hIdx;
                                 };
                                 const dayLbl = (d) => {
                                     const dd = new Date(horizonStart);
@@ -452,7 +461,7 @@ export default function Debug() {
                                     lines.push(`  ${pad("", 14)} ${colHead}`);
                                     lines.push(`  ${pad("", 14)} ${"─".repeat(48)}`);
                                     for (let d = 0; d < s.horizon_days; d++) {
-                                        const vals = CHUNK_HOURS.map((_, hIdx) => {
+                                        const vals = chunkHours.map((_, hIdx) => {
                                             const ci = toCI(d, hIdx);
                                             if (ci < 0) return "   —   ";
                                             const v = ci >= 0 && ci < arr.length ? arr[ci] : 0;
@@ -523,7 +532,7 @@ export default function Debug() {
                                     lines.push(`  │  ${"─".repeat(76)}`);
                                     for (const score of t.priority_scores) {
                                         const [c, lambda, r, nu, mu, eta] = score;
-                                        lines.push(`  │  ${pad(chunkLabel(c, horizonStart), 22)} ${rpad(r.toFixed(3), 10)} ${rpad(nu.toFixed(3), 12)} ${rpad(mu.toFixed(3), 10)} ${rpad(eta.toFixed(3), 10)} ${rpad(lambda.toFixed(3), 10)}`);
+                                        lines.push(`  │  ${pad(chunkLabel(c, horizonStart, chunksPerDay), 22)} ${rpad(r.toFixed(3), 10)} ${rpad(nu.toFixed(3), 12)} ${rpad(mu.toFixed(3), 10)} ${rpad(eta.toFixed(3), 10)} ${rpad(lambda.toFixed(3), 10)}`);
                                     }
                                 } else {
                                     lines.push(`  │  No positive Λ in any chunk.`);
@@ -539,13 +548,13 @@ export default function Debug() {
                             if (s.duals.time_prices.length > 0) {
                                 lines.push("  μ (time prices):");
                                 for (const [c, mu] of s.duals.time_prices) {
-                                    lines.push(`    ${pad(chunkLabel(c, horizonStart), 25)} μ = ${mu.toFixed(3)}`);
+                                    lines.push(`    ${pad(chunkLabel(c, horizonStart, chunksPerDay), 25)} μ = ${mu.toFixed(3)}`);
                                 }
                             }
                             if (s.duals.energy_prices.length > 0) {
                                 lines.push("  η (energy prices):");
                                 for (const [c, tag, eta] of s.duals.energy_prices) {
-                                    lines.push(`    ${pad(chunkLabel(c, horizonStart), 25)} [${pad(tag, 12)}] η = ${eta.toFixed(3)}`);
+                                    lines.push(`    ${pad(chunkLabel(c, horizonStart, chunksPerDay), 25)} [${pad(tag, 12)}] η = ${eta.toFixed(3)}`);
                                 }
                             }
                             if (s.duals.time_prices.length === 0 && s.duals.energy_prices.length === 0) {
@@ -572,7 +581,7 @@ export default function Debug() {
                                 lines.push("  STAGE 1: QP CONTINUOUS PRIORITIES (x_ic density)");
                                 lines.push("══════════════════════════════════════════════════════════════");
                                 for (const [name, c, v] of s.raw_priorities) {
-                                    lines.push(`  ${pad(name, 45)} @ ${pad(chunkLabel(c, horizonStart), 20)}: ${v.toFixed(3)}`);
+                                    lines.push(`  ${pad(name, 45)} @ ${pad(chunkLabel(c, horizonStart, chunksPerDay), 20)}: ${v.toFixed(3)}`);
                                 }
                                 lines.push("");
                             }
@@ -594,7 +603,7 @@ export default function Debug() {
                                 for (const [step, name, c, slots] of s.packing_trace) {
                                     const lv = lambdaMap.get(`${name}:${c}`);
                                     const lvStr = lv != null ? lv.toFixed(3) : "—";
-                                    lines.push(`  ${rpad(String(step), 4)}  ${pad(name, 35)}  ${pad(chunkLabel(c, horizonStart), 20)}  ${rpad(lvStr, 10)}  ${fmtSlots(slots)}`);
+                                    lines.push(`  ${rpad(String(step), 4)}  ${pad(name, 35)}  ${pad(chunkLabel(c, horizonStart, chunksPerDay), 20)}  ${rpad(lvStr, 10)}  ${fmtSlots(slots)}`);
                                 }
                                 lines.push("");
                             }

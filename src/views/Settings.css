@@ -107,6 +107,120 @@
     border-color: var(--gray-3);
 }
 
+/* ── Chunk config ── */
+
+.settings-grid-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.settings-grid-field-label {
+    font-size: 11px;
+    color: var(--gray-3);
+    min-width: 100px;
+    flex-shrink: 0;
+}
+
+.settings-grid-chips {
+    display: flex;
+    gap: 2px;
+}
+
+.settings-grid-chip {
+    font-family: monospace;
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid var(--gray-1);
+    border-radius: 3px;
+    color: var(--gray-3);
+    cursor: pointer;
+    transition: all 0.12s ease;
+    user-select: none;
+}
+
+.settings-grid-chip:hover {
+    border-color: var(--gray-2);
+    color: var(--fg);
+}
+
+.settings-grid-chip.active {
+    border-color: var(--blue);
+    color: var(--blue);
+    background: rgba(55, 165, 190, 0.06);
+}
+
+.settings-grid-input {
+    font-family: monospace;
+    font-size: 11px;
+    width: 48px;
+    padding: 3px 6px;
+    border: 1px solid var(--gray-1);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--fg);
+    outline: none;
+    text-align: center;
+    transition: border-color 0.12s ease;
+    -moz-appearance: textfield;
+}
+
+.settings-grid-input::-webkit-inner-spin-button,
+.settings-grid-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.settings-grid-input:focus {
+    border-color: var(--blue);
+}
+
+.settings-grid-derived {
+    font-size: 10px;
+    color: var(--gray-2);
+}
+
+.settings-grid-labels {
+    margin-top: 4px;
+}
+
+.settings-grid-label-list {
+    margin-top: 4px;
+}
+
+.settings-grid-label-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 3px;
+}
+
+.settings-grid-label-time {
+    font-family: monospace;
+    font-size: 10px;
+    color: var(--gray-2);
+    min-width: 90px;
+    flex-shrink: 0;
+}
+
+.settings-grid-label-input {
+    font-family: inherit;
+    font-size: 11px;
+    padding: 2px 6px;
+    border: 1px solid var(--gray-1);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--fg);
+    outline: none;
+    width: 140px;
+    transition: border-color 0.12s ease;
+}
+
+.settings-grid-label-input:focus {
+    border-color: var(--gray-2);
+}
+
 .settings-logout {
     font-size: 11px;
     color: var(--gray-3);

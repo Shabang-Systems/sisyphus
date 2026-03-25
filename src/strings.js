@@ -97,6 +97,13 @@ export default {
         "howdy",
         "hi"
     ],
+    VIEWS__SETTINGS_GRID: "Schedule Grid",
+    VIEWS__SETTINGS_GRID_HINT: "How the day is divided into chunks for scheduling.",
+    VIEWS__SETTINGS_GRID_CHUNKS: "Chunks per day",
+    VIEWS__SETTINGS_GRID_HORIZON: "Horizon (days)",
+    VIEWS__SETTINGS_GRID_LABELS: "Chunk labels",
+    VIEWS__SETTINGS_GRID_DERIVED: "hours/chunk, slots/chunk (1 slot = 30 min)",
+
     VIEWS__SETTINGS_TUTORIAL: "Tutorial",
     VIEWS__SETTINGS_TUTORIAL_CTA: "Take the tour",
     VIEWS__SETTINGS_TUTORIAL_HINT: "to learn how sisyphus works.",

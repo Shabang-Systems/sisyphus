@@ -1,10 +1,9 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import strings from "@strings";
 import "./Training.css";
 
 const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const CHUNK_LABELS = strings.CHUNK_LABELS;
 const TAG_RE = /@(\w+)/g;
 
 function parseTaskInput(raw) {
@@ -22,6 +21,13 @@ export default function Training({ onBack }) {
     const [selected, setSelected] = useState(null); // task id selected for placement
     const [trained, setTrained] = useState([]); // { text, tag, dow, chunk }
     const nextId = useRef(0);
+
+    const [chunkCfg, setChunkCfg] = useState({ chunks_per_day: 6, labels: strings.chunkLabels });
+    useEffect(() => {
+        invoke("get_chunk_config").then(setChunkCfg).catch(() => {});
+    }, []);
+    const chunkLabels = chunkCfg.labels;
+    const hoursPerChunk = 24 / chunkCfg.chunks_per_day;
 
     const handleKeyDown = useCallback((e) => {
         if (e.key !== "Enter") return;
@@ -51,13 +57,13 @@ export default function Training({ onBack }) {
         const task = tasks.find(t => t.id === selected);
         if (!task) return;
 
-        // Train Dirichlet: dow is 1-indexed (Mon=1..Sun=7), chunk is 1-indexed (1..6)
+        // Train Dirichlet: dow is 1-indexed (Mon=1..Sun=7), hour is wall-clock start
         const dow = dowIdx + 1;
-        const chunk = chunkIdx + 1;
+        const hour = chunkIdx * hoursPerChunk;
         const slots = 2.0; // Default S-size = 2 slots
 
         invoke("train_dirichlet", {
-            observations: [[dow, chunk, task.tag, slots]],
+            observations: [[dow, hour, task.tag, slots]],
         }).catch(console.error);
 
         setTrained(prev => [...prev, {
@@ -70,7 +76,7 @@ export default function Training({ onBack }) {
         // Remove from task list, clear selection
         setTasks(prev => prev.filter(t => t.id !== selected));
         setSelected(null);
-    }, [selected, tasks]);
+    }, [selected, tasks, hoursPerChunk]);
 
     // Build grid data from trained observations
     const gridData = {};
@@ -131,14 +137,14 @@ export default function Training({ onBack }) {
                     <div className="training-grid">
                         <div className="training-grid-header">
                             <div className="training-grid-corner" />
-                            {CHUNK_LABELS.map((label, i) => (
+                            {chunkLabels.map((label, i) => (
                                 <div key={i} className="training-grid-col-label">{label}</div>
                             ))}
                         </div>
                         {DOW_LABELS.map((dowLabel, dowIdx) => (
                             <div key={dowIdx} className="training-grid-row">
                                 <div className="training-grid-row-label">{dowLabel}</div>
-                                {CHUNK_LABELS.map((_, chunkIdx) => {
+                                {chunkLabels.map((_, chunkIdx) => {
                                     const key = `${dowIdx}:${chunkIdx}`;
                                     const cellTasks = gridData[key] || [];
                                     return (

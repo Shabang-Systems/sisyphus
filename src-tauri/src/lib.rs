@@ -38,6 +38,8 @@ pub fn run() {
             commands::insert_task_at,
             commands::get_setting,
             commands::set_setting,
+            commands::get_chunk_config,
+            commands::set_chunk_config,
             commands::train_nb_tag,
             commands::train_dirichlet,
             commands::sync_tasks,

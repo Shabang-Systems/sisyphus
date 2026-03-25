@@ -10,7 +10,11 @@ import Editor from "@views/Editor.jsx";
 import "./Action.css";
 
 const DOW_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const CHUNK_LABELS = strings.CHUNK_LABELS;
+const DEFAULT_CHUNK_CONFIG = {
+    chunks_per_day: 6,
+    horizon_days: 14,
+    labels: strings.CHUNK_LABELS,
+};
 
 function getGreeting() {
     const h = new Date().getHours();
@@ -41,6 +45,15 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
     // Only dispatch here if Redux is still in loading state (i.e., Action is the first view).
     const loading = useSelector(state => state.tasks.loading);
     useEffect(() => { if (loading) dispatch(snapshot()); }, [loading, dispatch]);
+
+    // Load chunk config from backend
+    const [chunkCfg, setChunkCfg] = useState(DEFAULT_CHUNK_CONFIG);
+    useEffect(() => {
+        invoke("get_chunk_config").then(setChunkCfg).catch(() => {});
+    }, []);
+    const hoursPerChunk = 24 / chunkCfg.chunks_per_day;
+    const slotsPerChunk = hoursPerChunk * 2;
+    const chunkLabels = chunkCfg.labels;
 
     // Fetch calendar freebusy once on mount (returned from Rust cache, fast)
     const [calBusy, setCalBusy] = useState(null);
@@ -82,7 +95,7 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
             if (dt) {
                 const d = new Date();
                 d.setDate(d.getDate() + dt.day);
-                d.setHours(dt.chunkIdx * 4, 0, 0, 0);
+                d.setHours(dt.chunkIdx * hoursPerChunk, 0, 0, 0);
                 const task = taskMap.current.get(tid);
                 if (task) {
                     const sched = d.toISOString();
@@ -121,7 +134,7 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
             const schedDate = new Date(task.schedule);
             const dayDiff = Math.floor((schedDate - todayStart) / 86400000);
             if (dayDiff < 0) { overdue.push(task); continue; }
-            const chunkIdx = Math.floor(schedDate.getHours() / 4);
+            const chunkIdx = Math.floor(schedDate.getHours() / hoursPerChunk);
             const key = `${dayDiff}:${chunkIdx}`;
 
             if (!result.has(key)) result.set(key, { dayDiff, chunkIdx, tasks: [] });
@@ -172,13 +185,13 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                     type: "chunk",
                     dayDiff: day,
                     chunkIdx: dc.chunkIdx,
-                    label: CHUNK_LABELS[dc.chunkIdx] || "",
+                    label: chunkLabels[dc.chunkIdx] || "",
                     tasks: newArrayMap.get(key) || dc.tasks,
                 });
             }
         }
         return ordered;
-    }, [allTasks]);
+    }, [allTasks, hoursPerChunk, chunkLabels]);
 
     // Parked tasks: no schedule, not completed, not deferred, has content.
     // Stabilize reference — only produce new array when membership changes.
@@ -255,7 +268,7 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                                         scheduleDate={(() => {
                                             const d = new Date();
                                             d.setDate(d.getDate() + item.dayDiff);
-                                            d.setHours(item.chunkIdx * 4, 0, 0, 0);
+                                            d.setHours(item.chunkIdx * hoursPerChunk, 0, 0, 0);
                                             return d.toISOString();
                                         })()}
                                     />
@@ -286,8 +299,8 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                     if (!t.schedule || t.completed_at) continue;
                     const sd = new Date(t.schedule);
                     const dd = Math.floor((sd - todayStart) / 86400000);
-                    if (dd < 0 || dd >= 14) continue;
-                    const ci = Math.floor(sd.getHours() / 4);
+                    if (dd < 0 || dd >= chunkCfg.horizon_days) continue;
+                    const ci = Math.floor(sd.getHours() / hoursPerChunk);
                     const key = `${dd}:${ci}`;
                     const slots = effortSlots[t.effort || 0];
                     loadMap.set(key, (loadMap.get(key) || 0) + slots);
@@ -303,28 +316,28 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                     }}>
                         <div className="action-drop-header">
                             <div />
-                            {CHUNK_LABELS.map((label, i) => (
+                            {chunkLabels.map((label, i) => (
                                 <div key={i} className="action-drop-col-label">{label}</div>
                             ))}
                         </div>
-                        {[...Array(14)].map((_, dayIdx) => (
+                        {[...Array(chunkCfg.horizon_days)].map((_, dayIdx) => (
                             <div key={dayIdx} className="action-drop-row">
                                 <div className={`action-drop-row-label${dayIdx === 0 ? " today" : ""}`}>{dayLabel(dayIdx)}</div>
-                                {CHUNK_LABELS.map((_, chunkIdx) => {
+                                {chunkLabels.map((_, chunkIdx) => {
                                     const isCurrent = dayIdx === currentDay && chunkIdx === currentChunk;
                                     const isActive = dropTarget?.day === dayIdx && dropTarget?.chunkIdx === chunkIdx;
 
-                                    // Total fill: calendar busy + task load, relative to chunk capacity (8 slots)
-                                    const calIdx = dayIdx * 6 + chunkIdx;
+                                    // Total fill: calendar busy + task load, relative to chunk capacity
+                                    const calIdx = dayIdx * chunkCfg.chunks_per_day + chunkIdx;
                                     const busy = calBusy ? (calBusy[calIdx] || 0) : 0;
-                                    const available = 8 - busy;
+                                    const available = slotsPerChunk - busy;
                                     const taskLoad = loadMap.get(`${dayIdx}:${chunkIdx}`) || 0;
 
                                     // Fill = (calendar + tasks) / capacity. Capped at 1.
                                     // If 0 available (all calendar), max intensity.
                                     const fill = available <= 0
                                         ? 1
-                                        : Math.min((busy + taskLoad) / 8, 1);
+                                        : Math.min((busy + taskLoad) / slotsPerChunk, 1);
 
                                     // Grey → Yellow: lerp from rgb(160,160,160) to rgb(240,200,50)
                                     const r = Math.round(160 + fill * (240 - 160));

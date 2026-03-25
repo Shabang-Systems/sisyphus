@@ -1,7 +1,7 @@
 use crate::state::{GlobalState, Task, Sheet};
 use chrono::Timelike;
 use tauri::Emitter;
-use crate::scheduler::{self, SchedulerOutput, TaskInput, SchedulerParams};
+use crate::scheduler::{self, SchedulerOutput, TaskInput, SchedulerParams, ChunkConfig};
 use crate::energy;
 use crate::nb;
 use crate::calendar;
@@ -101,27 +101,31 @@ pub async fn get_calendar_freebusy(state: tauri::State<'_, GlobalState>) -> Resu
     Ok(grid)
 }
 
-/// Fetch calendar busy blocks, compute the 14×6 absolute grid, and store in cache.
+/// Fetch calendar busy blocks, compute the absolute grid, and store in cache.
 async fn fetch_and_cache_cal_grid(state: &GlobalState) -> Vec<f64> {
     let pool_guard = state.pool.read().await;
     let pool = match pool_guard.as_ref() {
         Some(p) => p,
         None => {
-            let empty = vec![0.0f64; 14 * 6];
+            let cfg = ChunkConfig::default();
+            let empty = vec![0.0f64; cfg.horizon_days * cfg.chunks_per_day];
             *state.cal_grid_cache.write().await = Some(empty.clone());
             return empty;
         }
     };
+
+    let cfg = load_chunk_config(pool).await;
+    let grid_size = cfg.horizon_days * cfg.chunks_per_day;
 
     let cal_urls_json = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'calendars'")
         .fetch_optional(pool).await.unwrap_or(None).unwrap_or_else(|| "[]".to_string());
     let cal_urls: Vec<String> = serde_json::from_str(&cal_urls_json).unwrap_or_default();
 
     let grid = if cal_urls.is_empty() {
-        vec![0.0f64; 14 * 6]
+        vec![0.0f64; grid_size]
     } else {
-        let blocks = calendar::fetch_busy_blocks(&cal_urls).await;
-        calendar::busy_to_grid(&blocks)
+        let blocks = calendar::fetch_busy_blocks(&cal_urls, cfg.horizon_days).await;
+        calendar::busy_to_grid(&blocks, &cfg)
     };
 
     *state.cal_grid_cache.write().await = Some(grid.clone());
@@ -136,6 +140,10 @@ pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<Sc
 async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, String> {
     let pool_guard = state.pool.read().await;
     let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+
+    // Load chunk config from settings
+    let cfg = load_chunk_config(pool).await;
+    let hours_per_chunk = cfg.hours_per_chunk();
 
     // Fetch active tasks (not completed, not deferred, not empty)
     let tasks = state.snapshot().await.map_err(|e| e.to_string())?;
@@ -181,7 +189,7 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
     // Current day-of-week (1=Mon, 7=Sun) and within-day chunk position
     let now = chrono::Local::now();
     let start_dow = now.format("%u").to_string().parse::<usize>().unwrap_or(1);
-    let start_h = now.hour() as usize / 4; // 0–5 within-day chunk position
+    let start_h = now.hour() as usize / hours_per_chunk; // within-day chunk position
 
     // Build a map from task_params for predicted tags
     let predicted_tags: std::collections::HashMap<String, String> = task_params.iter()
@@ -195,8 +203,8 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
         if t.locked { continue; }
 
         let tag = predicted_tags.get(&t.id).cloned().unwrap_or_else(|| "__untagged__".to_string());
-        let t_s = date_to_chunk_start(&t.start_date);
-        let t_f = date_to_chunk_end(&t.effective_due);
+        let t_s = date_to_chunk_start(&t.start_date, &cfg);
+        let t_f = date_to_chunk_end(&t.effective_due, &cfg);
 
         let name = text_re.captures(&t.content)
             .and_then(|c| c.get(1))
@@ -204,7 +212,7 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
             .unwrap_or_else(|| t.id[..8.min(t.id.len())].to_string());
 
         // Compute current scheduled chunk for stability seeding
-        let current_chunk = t.schedule.as_ref().map(|s| date_to_chunk(&Some(s.clone()), 0));
+        let current_chunk = t.schedule.as_ref().map(|s| date_to_chunk(&Some(s.clone()), 0, &cfg));
 
         scheduler_tasks.push(TaskInput::new(
             t.id.clone(),
@@ -214,24 +222,26 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
             name,
             start_h,
             current_chunk,
+            &cfg,
         ));
     }
 
     // Compute capacity consumed by completed, locked tasks, and calendar events
-    let mut capacity_used = vec![0.0f64; scheduler::TOTAL_CHUNKS];
+    let total_chunks = cfg.total_chunks();
+    let mut capacity_used = vec![0.0f64; total_chunks];
     for t in &tasks {
         if t.locked && t.completed_at.is_none() {
             if let Some(ref sched) = t.schedule {
-                let chunk = date_to_chunk(&Some(sched.clone()), 0);
-                if chunk < scheduler::TOTAL_CHUNKS {
+                let chunk = date_to_chunk(&Some(sched.clone()), 0, &cfg);
+                if chunk < total_chunks {
                     capacity_used[chunk] += scheduler::effort_to_slots(t.effort);
                 }
             }
             continue;
         }
         if let Some(ref done) = t.completed_at {
-            let chunk = date_to_chunk(&Some(done.clone()), 0);
-            if chunk < scheduler::TOTAL_CHUNKS {
+            let chunk = date_to_chunk(&Some(done.clone()), 0, &cfg);
+            if chunk < total_chunks {
                 capacity_used[chunk] += scheduler::effort_to_slots(t.effort);
             }
         }
@@ -242,20 +252,21 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
         .fetch_optional(pool).await.map_err(|e| e.to_string())?.unwrap_or_else(|| "[]".to_string());
     let cal_urls: Vec<String> = serde_json::from_str(&cal_urls_json).unwrap_or_default();
     if !cal_urls.is_empty() {
-        let blocks = calendar::fetch_busy_blocks(&cal_urls).await;
-        let cal_used = calendar::busy_to_capacity(&blocks, start_h);
-        for i in 0..scheduler::TOTAL_CHUNKS {
+        let blocks = calendar::fetch_busy_blocks(&cal_urls, cfg.horizon_days).await;
+        let cal_used = calendar::busy_to_capacity(&blocks, start_h, &cfg);
+        for i in 0..total_chunks {
             capacity_used[i] += cal_used[i];
         }
         // Update the absolute grid cache for get_calendar_freebusy
-        let grid = calendar::busy_to_grid(&blocks);
+        let grid = calendar::busy_to_grid(&blocks, &cfg);
         *state.cal_grid_cache.write().await = Some(grid);
     } else {
-        *state.cal_grid_cache.write().await = Some(vec![0.0f64; 14 * 6]);
+        let grid_size = cfg.horizon_days * cfg.chunks_per_day;
+        *state.cal_grid_cache.write().await = Some(vec![0.0f64; grid_size]);
     }
 
     let params = SchedulerParams::default();
-    let output = scheduler::solve(&scheduler_tasks, &dirichlet, &params, start_dow, start_h, &capacity_used);
+    let output = scheduler::solve(&scheduler_tasks, &dirichlet, &params, start_dow, start_h, &capacity_used, &cfg);
 
     // Write schedule dates to DB — use the chunk where the task has the most slots.
     // This ensures an L task split across two chunks (e.g. 7+1) shows in the chunk
@@ -446,29 +457,33 @@ fn date_to_hours_from_now(date: &Option<String>) -> Option<i64> {
 }
 
 /// start_date → chunk. Absent or past → 0 (eligible now). Future → that chunk.
-fn date_to_chunk_start(date: &Option<String>) -> usize {
+fn date_to_chunk_start(date: &Option<String>, cfg: &ChunkConfig) -> usize {
+    let total_chunks = cfg.total_chunks();
+    let hours_per_chunk = cfg.hours_per_chunk();
     match date_to_hours_from_now(date) {
-        Some(h) if h > 0 => (h as usize / 4).min(scheduler::TOTAL_CHUNKS - 1),
+        Some(h) if h > 0 => (h as usize / hours_per_chunk).min(total_chunks - 1),
         _ => 0,
     }
 }
 
-/// due_date → chunk. Absent → TOTAL_CHUNKS-1 (full horizon).
+/// due_date → chunk. Absent → total_chunks-1 (full horizon).
 /// Past (overdue) → 0 (deadline already passed, maximum urgency).
 /// Future → that chunk.
-fn date_to_chunk_end(date: &Option<String>) -> usize {
+fn date_to_chunk_end(date: &Option<String>, cfg: &ChunkConfig) -> usize {
+    let total_chunks = cfg.total_chunks();
+    let hours_per_chunk = cfg.hours_per_chunk();
     match date_to_hours_from_now(date) {
-        Some(h) if h > 0 => (h as usize / 4).min(scheduler::TOTAL_CHUNKS - 1),
+        Some(h) if h > 0 => (h as usize / hours_per_chunk).min(total_chunks - 1),
         Some(_) => 0, // overdue: deadline passed, treat as maximally urgent
-        None => scheduler::TOTAL_CHUNKS - 1,
+        None => total_chunks - 1,
     }
 }
 
 /// Converts an ISO date string to a scheduler chunk index, accounting for start_h offset.
-/// The scheduler's chunk 0 = the current 4-hour block. Chunks fill the rest of today,
+/// The scheduler's chunk 0 = the current time block. Chunks fill the rest of today,
 /// then wrap to midnight of the next day.
 /// Returns `default` if the date is None or unparseable.
-fn date_to_chunk(date: &Option<String>, default: usize) -> usize {
+fn date_to_chunk(date: &Option<String>, default: usize, cfg: &ChunkConfig) -> usize {
     let d = match date {
         Some(s) => s,
         None => return default,
@@ -482,9 +497,10 @@ fn date_to_chunk(date: &Option<String>, default: usize) -> usize {
         return default;
     };
 
-    // Compute which 4-hour block the target falls in, as a scheduler chunk index
-    let now_h = now.hour() as usize / 4; // start_h equivalent
-    let remaining_today = scheduler::CHUNKS_PER_DAY - now_h;
+    let total_chunks = cfg.total_chunks();
+    let hours_per_chunk = cfg.hours_per_chunk();
+    let now_h = now.hour() as usize / hours_per_chunk;
+    let remaining_today = cfg.chunks_per_day - now_h;
 
     let diff = target.signed_duration_since(now);
     if diff.num_seconds() < 0 {
@@ -496,19 +512,17 @@ fn date_to_chunk(date: &Option<String>, default: usize) -> usize {
     let target_day_start = target.date_naive().and_hms_opt(0, 0, 0).unwrap();
     let now_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
     let day_diff = (target_day_start - now_day_start).num_days() as usize;
-    let target_h = target.hour() as usize / 4; // 0-5 position within day
+    let target_h = target.hour() as usize / hours_per_chunk;
 
     if day_diff == 0 {
-        // Same day: chunk = target_h - now_h (offset within today's remaining chunks)
         if target_h >= now_h {
-            (target_h - now_h).min(scheduler::TOTAL_CHUNKS - 1)
+            (target_h - now_h).min(total_chunks - 1)
         } else {
-            0 // earlier today = past
+            0
         }
     } else {
-        // Future day: remaining_today chunks for rest of today, then full days
-        let chunk = remaining_today + (day_diff - 1) * scheduler::CHUNKS_PER_DAY + target_h;
-        chunk.min(scheduler::TOTAL_CHUNKS - 1)
+        let chunk = remaining_today + (day_diff - 1) * cfg.chunks_per_day + target_h;
+        chunk.min(total_chunks - 1)
     }
 }
 
@@ -536,6 +550,53 @@ pub async fn set_setting(key: String, value: String, state: tauri::State<'_, Glo
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Chunk Config ──
+
+/// Load ChunkConfig from settings, or return the default if not set.
+async fn load_chunk_config(pool: &sqlx::SqlitePool) -> ChunkConfig {
+    let json = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'chunk_config'")
+        .fetch_optional(pool).await.unwrap_or(None);
+    match json {
+        Some(s) => serde_json::from_str(&s).unwrap_or_default(),
+        None => ChunkConfig::default(),
+    }
+}
+
+#[tauri::command]
+pub async fn get_chunk_config(state: tauri::State<'_, GlobalState>) -> Result<ChunkConfig, String> {
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+    Ok(load_chunk_config(pool).await)
+}
+
+#[tauri::command]
+pub async fn set_chunk_config(config: ChunkConfig, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
+    // Validate: chunks_per_day must divide 24 evenly
+    if 24 % config.chunks_per_day != 0 || config.chunks_per_day == 0 {
+        return Err("chunks_per_day must divide 24 evenly (1,2,3,4,6,8,12,24)".to_string());
+    }
+    if config.horizon_days == 0 || config.horizon_days > 60 {
+        return Err("horizon_days must be between 1 and 60".to_string());
+    }
+    if config.labels.len() != config.chunks_per_day {
+        return Err(format!("labels length ({}) must equal chunks_per_day ({})", config.labels.len(), config.chunks_per_day));
+    }
+
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
+    let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('chunk_config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(&json)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Invalidate calendar cache since grid dimensions may have changed
+    *state.cal_grid_cache.write().await = None;
+
     Ok(())
 }
 

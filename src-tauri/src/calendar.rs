@@ -1,5 +1,5 @@
 use chrono::{DateTime, Local, NaiveDateTime, Duration, Utc, Timelike};
-use crate::scheduler::{TOTAL_CHUNKS, CHUNKS_PER_DAY};
+use crate::scheduler::ChunkConfig;
 
 /// A busy time block from a calendar event.
 #[derive(Debug, Clone)]
@@ -9,9 +9,9 @@ pub struct BusyBlock {
 }
 
 /// Fetch and parse ICS calendars, returning busy blocks within the scheduling horizon.
-pub async fn fetch_busy_blocks(urls: &[String]) -> Vec<BusyBlock> {
+pub async fn fetch_busy_blocks(urls: &[String], horizon_days: usize) -> Vec<BusyBlock> {
     let now = Local::now();
-    let horizon_end = now + Duration::days(14);
+    let horizon_end = now + Duration::days(horizon_days as i64);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -63,12 +63,15 @@ pub async fn fetch_busy_blocks(urls: &[String]) -> Vec<BusyBlock> {
 }
 
 /// Convert busy blocks into capacity reduction per chunk.
-/// Returns a vec of TOTAL_CHUNKS floats: slots consumed by calendar events.
-pub fn busy_to_capacity(blocks: &[BusyBlock], _start_h: usize) -> Vec<f64> {
-    let mut used = vec![0.0f64; TOTAL_CHUNKS];
+/// Returns a vec of `total_chunks` floats: slots consumed by calendar events.
+pub fn busy_to_capacity(blocks: &[BusyBlock], _start_h: usize, cfg: &ChunkConfig) -> Vec<f64> {
+    let total_chunks = cfg.total_chunks();
+    let hours_per_chunk = cfg.hours_per_chunk();
+    let slots_per_chunk = cfg.slots_per_chunk();
+    let mut used = vec![0.0f64; total_chunks];
     let now = Local::now();
-    let now_h = now.hour() as usize / 4;
-    let remaining_today = CHUNKS_PER_DAY - now_h;
+    let now_h = now.hour() as usize / hours_per_chunk;
+    let remaining_today = cfg.chunks_per_day - now_h;
 
     for block in blocks {
         // Iterate 30-minute slots within the block
@@ -77,7 +80,7 @@ pub fn busy_to_capacity(blocks: &[BusyBlock], _start_h: usize) -> Vec<f64> {
             let diff = cursor.signed_duration_since(now);
             if diff.num_seconds() >= 0 {
                 // Map to chunk index using same logic as date_to_chunk
-                let target_h = cursor.hour() as usize / 4;
+                let target_h = cursor.hour() as usize / hours_per_chunk;
                 let day_start = cursor.date_naive().and_hms_opt(0, 0, 0).unwrap();
                 let now_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
                 let day_diff = (day_start - now_day_start).num_days() as usize;
@@ -85,10 +88,10 @@ pub fn busy_to_capacity(blocks: &[BusyBlock], _start_h: usize) -> Vec<f64> {
                 let chunk = if day_diff == 0 {
                     if target_h >= now_h { target_h - now_h } else { 0 }
                 } else {
-                    remaining_today + (day_diff - 1) * CHUNKS_PER_DAY + target_h
+                    remaining_today + (day_diff - 1) * cfg.chunks_per_day + target_h
                 };
 
-                if chunk < TOTAL_CHUNKS {
+                if chunk < total_chunks {
                     // Add 1 slot (30 min) for this time slice
                     used[chunk] += 1.0;
                 }
@@ -97,18 +100,21 @@ pub fn busy_to_capacity(blocks: &[BusyBlock], _start_h: usize) -> Vec<f64> {
         }
     }
 
-    // Cap at 8 slots per chunk (full capacity)
+    // Cap at slots_per_chunk (full capacity)
     for v in &mut used {
-        *v = v.min(8.0);
+        *v = v.min(slots_per_chunk);
     }
 
     used
 }
 
-/// Convert busy blocks into an absolute 14×6 grid (day × chunk-of-day).
-/// Index = day * 6 + chunk_of_day. Each value is 0.0–8.0 slots.
-pub fn busy_to_grid(blocks: &[BusyBlock]) -> Vec<f64> {
-    let mut grid = vec![0.0f64; 14 * 6];
+/// Convert busy blocks into an absolute grid (day × chunk-of-day).
+/// Index = day * chunks_per_day + chunk_of_day. Each value is 0.0–slots_per_chunk.
+pub fn busy_to_grid(blocks: &[BusyBlock], cfg: &ChunkConfig) -> Vec<f64> {
+    let grid_size = cfg.horizon_days * cfg.chunks_per_day;
+    let hours_per_chunk = cfg.hours_per_chunk();
+    let slots_per_chunk = cfg.slots_per_chunk();
+    let mut grid = vec![0.0f64; grid_size];
     let now = Local::now();
     let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
 
@@ -117,9 +123,9 @@ pub fn busy_to_grid(blocks: &[BusyBlock]) -> Vec<f64> {
         while cursor < block.end {
             let day_start = cursor.date_naive().and_hms_opt(0, 0, 0).unwrap();
             let day_diff = (day_start - today_start).num_days();
-            if day_diff >= 0 && day_diff < 14 {
-                let chunk_of_day = cursor.hour() as usize / 4;
-                let idx = day_diff as usize * 6 + chunk_of_day;
+            if day_diff >= 0 && (day_diff as usize) < cfg.horizon_days {
+                let chunk_of_day = cursor.hour() as usize / hours_per_chunk;
+                let idx = day_diff as usize * cfg.chunks_per_day + chunk_of_day;
                 if idx < grid.len() {
                     grid[idx] += 1.0;
                 }
@@ -129,7 +135,7 @@ pub fn busy_to_grid(blocks: &[BusyBlock]) -> Vec<f64> {
     }
 
     for v in &mut grid {
-        *v = v.min(8.0);
+        *v = v.min(slots_per_chunk);
     }
 
     grid

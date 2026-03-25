@@ -51,17 +51,53 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Planning horizon in days. Each day has [`CHUNKS_PER_DAY`] chunks.
-pub const HORIZON_DAYS: usize = 14;
+/// Default planning horizon in days.
+const DEFAULT_HORIZON_DAYS: usize = 14;
 
-/// Number of 4-hour chunks per day (24h / 4h = 6).
-pub const CHUNKS_PER_DAY: usize = 6;
+/// Default number of chunks per day (24h / 4h = 6).
+const DEFAULT_CHUNKS_PER_DAY: usize = 6;
 
-/// Total chunks in the planning horizon.
-pub const TOTAL_CHUNKS: usize = HORIZON_DAYS * CHUNKS_PER_DAY;
+/// Runtime-configurable grid parameters for the scheduling horizon.
+///
+/// The scheduler divides each day into equal-length chunks. Each chunk holds
+/// `hours_per_chunk * 2` slots (1 slot = 30 minutes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkConfig {
+    /// Number of equal-length time blocks per day. Must divide 24 evenly.
+    pub chunks_per_day: usize,
+    /// Planning horizon in days.
+    pub horizon_days: usize,
+    /// Human-readable labels for each chunk (length must equal `chunks_per_day`).
+    pub labels: Vec<String>,
+}
 
-/// Maximum slots per chunk (4 hours / 30 minutes = 8).
-pub const SLOTS_PER_CHUNK: f64 = 8.0;
+impl Default for ChunkConfig {
+    fn default() -> Self {
+        Self {
+            chunks_per_day: DEFAULT_CHUNKS_PER_DAY,
+            horizon_days: DEFAULT_HORIZON_DAYS,
+            labels: vec![
+                "midnight".into(), "dawn".into(), "morning".into(),
+                "afternoon".into(), "evening".into(), "night".into(),
+            ],
+        }
+    }
+}
+
+impl ChunkConfig {
+    /// Total chunks in the planning horizon.
+    pub fn total_chunks(&self) -> usize {
+        self.chunks_per_day * self.horizon_days
+    }
+    /// Hours per chunk (e.g. 4 when chunks_per_day = 6).
+    pub fn hours_per_chunk(&self) -> usize {
+        24 / self.chunks_per_day
+    }
+    /// Maximum slots per chunk (hours_per_chunk * 2, since 1 slot = 30 min).
+    pub fn slots_per_chunk(&self) -> f64 {
+        (self.hours_per_chunk() * 2) as f64
+    }
+}
 
 /// Dirichlet forgetting factor. Each (dow, chunk) Dirichlet gets one observation
 /// per week. ρ = 0.95 gives a half-life of ≈14 observations = 14 weeks.
@@ -122,16 +158,20 @@ impl TaskInput {
         id: String, w: f64, t_s: usize, t_f: usize,
         tag: String, parent_id: Option<String>, name: String,
         start_h: usize, current_chunk: Option<usize>,
+        cfg: &ChunkConfig,
     ) -> Self {
-        let t_f = t_f.min(TOTAL_CHUNKS - 1);
-        let (t_s, t_f) = ensure_capacity(t_s, t_f, start_h);
+        let total_chunks = cfg.total_chunks();
+        let t_f = t_f.min(total_chunks - 1);
+        let (t_s, t_f) = ensure_capacity(t_s, t_f, start_h, cfg);
         Self { id, w, t_s, t_f, tag, parent_id, name, current_chunk }
     }
 }
 
 /// Expand [t_s, t_f] outward until at least one chunk in the range has capacity.
-fn ensure_capacity(t_s: usize, t_f: usize, start_h: usize) -> (usize, usize) {
-    if (t_s..=t_f).any(|c| get_chunk_capacity(c, start_h) > 0.0) {
+fn ensure_capacity(t_s: usize, t_f: usize, _start_h: usize, cfg: &ChunkConfig) -> (usize, usize) {
+    let total_chunks = cfg.total_chunks();
+    let spc = cfg.slots_per_chunk();
+    if (t_s..=t_f).any(|_c| spc > 0.0) {
         return (t_s, t_f);
     }
     let mid = (t_s + t_f) / 2;
@@ -139,12 +179,12 @@ fn ensure_capacity(t_s: usize, t_f: usize, start_h: usize) -> (usize, usize) {
     let mut hi = mid;
     loop {
         if lo > 0 { lo -= 1; }
-        if hi < TOTAL_CHUNKS - 1 { hi += 1; }
-        if get_chunk_capacity(lo, start_h) > 0.0 || get_chunk_capacity(hi, start_h) > 0.0 {
+        if hi < total_chunks - 1 { hi += 1; }
+        if spc > 0.0 {
             return (lo, hi);
         }
-        if lo == 0 && hi >= TOTAL_CHUNKS - 1 {
-            return (0, TOTAL_CHUNKS - 1);
+        if lo == 0 && hi >= total_chunks - 1 {
+            return (0, total_chunks - 1);
         }
     }
 }
@@ -291,46 +331,46 @@ fn delay_reward(alpha: f64, eff: f64) -> f64 {
     alpha * eff
 }
 
-/// Returns the absolute wall-clock hour position (0–5) for a chunk index,
-/// given the starting offset `start_h`.
+/// Returns the absolute wall-clock hour position (0..chunks_per_day-1) for a
+/// chunk index, given the starting offset `start_h`.
 ///
-/// Chunk 0 maps to `start_h`. The first `6 - start_h` chunks fill the rest
-/// of today. Subsequent chunks start at position 0 (midnight) for each new day.
-fn abs_hour_pos(chunk_index: usize, start_h: usize) -> usize {
-    let remaining_today = CHUNKS_PER_DAY - start_h;
+/// Chunk 0 maps to `start_h`. The first `chunks_per_day - start_h` chunks fill
+/// the rest of today. Subsequent chunks start at position 0 for each new day.
+fn abs_hour_pos(chunk_index: usize, start_h: usize, cfg: &ChunkConfig) -> usize {
+    let remaining_today = cfg.chunks_per_day - start_h;
     if chunk_index < remaining_today {
         start_h + chunk_index
     } else {
-        (chunk_index - remaining_today) % CHUNKS_PER_DAY
+        (chunk_index - remaining_today) % cfg.chunks_per_day
     }
 }
 
-/// Returns the base capacity C(c) for a given chunk index.
+/// Returns the base capacity C(c) for a given chunk.
 ///
-/// All chunks start at full capacity (8 slots). Calendar busy blocks and
+/// All chunks start at full capacity. Calendar busy blocks and
 /// locked/completed tasks subtract from this via `capacity_used`.
-fn get_chunk_capacity(_chunk_index: usize, _start_h: usize) -> f64 {
-    SLOTS_PER_CHUNK
+fn get_chunk_capacity(cfg: &ChunkConfig) -> f64 {
+    cfg.slots_per_chunk()
 }
 
 /// Maps a chunk index to the wall-clock hour it starts at.
-fn chunk_to_hour(chunk_index: usize, start_h: usize) -> usize {
-    abs_hour_pos(chunk_index, start_h) * 4
+fn chunk_to_hour(chunk_index: usize, start_h: usize, cfg: &ChunkConfig) -> usize {
+    abs_hour_pos(chunk_index, start_h, cfg) * cfg.hours_per_chunk()
 }
 
 /// Maps a chunk index to which day offset (0 = today, 1 = tomorrow, ...).
-fn chunk_to_day(chunk_index: usize, start_h: usize) -> usize {
-    let remaining_today = CHUNKS_PER_DAY - start_h;
+fn chunk_to_day(chunk_index: usize, start_h: usize, cfg: &ChunkConfig) -> usize {
+    let remaining_today = cfg.chunks_per_day - start_h;
     if chunk_index < remaining_today {
         0
     } else {
-        1 + (chunk_index - remaining_today) / CHUNKS_PER_DAY
+        1 + (chunk_index - remaining_today) / cfg.chunks_per_day
     }
 }
 
 /// Maps a chunk index to day-of-week (1=Mon, 7=Sun).
-fn chunk_to_dow(chunk_index: usize, start_dow: usize, start_h: usize) -> usize {
-    let day = chunk_to_day(chunk_index, start_h);
+fn chunk_to_dow(chunk_index: usize, start_dow: usize, start_h: usize, cfg: &ChunkConfig) -> usize {
+    let day = chunk_to_day(chunk_index, start_h, cfg);
     ((start_dow + day - 1) % 7) + 1
 }
 
@@ -361,15 +401,19 @@ pub fn solve(
     dirichlet: &HashMap<(usize, usize, String), f64>,
     params: &SchedulerParams,
     start_dow: usize,
-    start_h: usize, // within-day chunk position of chunk 0 (0–5, e.g. 3 for 12:00–16:00)
+    start_h: usize, // within-day chunk position of chunk 0
     capacity_used: &[f64], // pre-consumed slots per chunk (from completed/locked tasks)
+    cfg: &ChunkConfig,
 ) -> SchedulerOutput {
+    let total_chunks = cfg.total_chunks();
+    let slots_per_chunk = cfg.slots_per_chunk();
+
     let n = tasks.len();
     if n == 0 {
         return SchedulerOutput {
             allocations: vec![], task_info: vec![], parked: vec![],
             duals: DualInfo { time_prices: vec![], energy_prices: vec![] },
-            horizon_days: HORIZON_DAYS, chunks_per_day: CHUNKS_PER_DAY,
+            horizon_days: cfg.horizon_days, chunks_per_day: cfg.chunks_per_day,
             errors: vec!["No schedulable tasks found.".to_string()],
             raw_priorities: vec![], packing_trace: vec![],
             tag_set: vec![], energy_caps: vec![], chunk_caps: vec![],
@@ -390,8 +434,8 @@ pub fn solve(
     let n_tags = tag_set.len();
 
     // C(c): physical capacity from calendar, minus pre-consumed slots
-    let cap: Vec<f64> = (0..TOTAL_CHUNKS).map(|c| {
-        let raw = get_chunk_capacity(c, start_h);
+    let cap: Vec<f64> = (0..total_chunks).map(|c| {
+        let raw = get_chunk_capacity(cfg);
         let used = if c < capacity_used.len() { capacity_used[c] } else { 0.0 };
         (raw - used).max(0.0)
     }).collect();
@@ -399,13 +443,13 @@ pub fn solve(
     // ξ_k(c): raw Dirichlet concentration parameters per tag per chunk.
     // Used to compute efficiency multipliers e_k(c) = ξ_k(c) / ξ̄_k,
     // where ξ̄_k is the mean of ξ_k across all chunks in the horizon.
-    let mut dir_xi: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
-    let mut dir_mean: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
+    let mut dir_xi: Vec<Vec<f64>> = vec![vec![0.0; total_chunks]; n_tags];
+    let mut dir_mean: Vec<Vec<f64>> = vec![vec![0.0; total_chunks]; n_tags];
     // energy_cap kept for diagnostic output only (not used in constraints)
-    let mut energy_cap: Vec<Vec<f64>> = vec![vec![0.0; TOTAL_CHUNKS]; n_tags];
-    for c in 0..TOTAL_CHUNKS {
-        let dow = chunk_to_dow(c, start_dow, start_h);
-        let h = abs_hour_pos(c, start_h) + 1; // 1–6 for Dirichlet lookup
+    let mut energy_cap: Vec<Vec<f64>> = vec![vec![0.0; total_chunks]; n_tags];
+    for c in 0..total_chunks {
+        let dow = chunk_to_dow(c, start_dow, start_h, cfg);
+        let h = abs_hour_pos(c, start_h, cfg) * cfg.hours_per_chunk(); // wall-clock start hour for Dirichlet lookup
 
         let xi_vals: Vec<f64> = tag_set.iter()
             .map(|tag| {
@@ -427,11 +471,11 @@ pub fn solve(
     // Normalized per-tag across chunks so that e > 1 at preferred times
     // (fewer physical slots needed) and e < 1 at non-preferred times.
     // Clamped to [0.2, 5.0] to prevent extreme stretching or compression.
-    let mut efficiency: Vec<Vec<f64>> = vec![vec![1.0; TOTAL_CHUNKS]; n_tags];
+    let mut efficiency: Vec<Vec<f64>> = vec![vec![1.0; total_chunks]; n_tags];
     for k in 0..n_tags {
-        let xi_mean: f64 = dir_xi[k].iter().sum::<f64>() / TOTAL_CHUNKS as f64;
+        let xi_mean: f64 = dir_xi[k].iter().sum::<f64>() / total_chunks as f64;
         if xi_mean > 1e-9 {
-            for c in 0..TOTAL_CHUNKS {
+            for c in 0..total_chunks {
                 efficiency[k][c] = (dir_xi[k][c] / xi_mean).clamp(0.2, 5.0);
             }
         }
@@ -451,7 +495,7 @@ pub fn solve(
     let mut x_var_map: HashMap<(usize, usize), usize> = HashMap::new();
 
     for (i, task) in tasks.iter().enumerate() {
-        for c in task.t_s..=task.t_f.min(TOTAL_CHUNKS - 1) {
+        for c in task.t_s..=task.t_f.min(total_chunks - 1) {
             if cap[c] > 0.0 {
                 let var_idx = x_vars.len();
                 x_vars.push((i, c));
@@ -508,11 +552,11 @@ pub fn solve(
     }
 
     // Constraint counts
-    let n_c1 = TOTAL_CHUNKS;                        // chunk capacity
+    let n_c1 = total_chunks;                         // chunk capacity
     // C2 (energy by tag) removed — Dirichlet preference now enters via objective
     let n_c2 = 0;
     let n_c3 = n;                                    // work completion
-    let n_c5 = prec_pairs.len() * TOTAL_CHUNKS;     // precedence
+    let n_c5 = prec_pairs.len() * total_chunks;     // precedence
     let n_bounds = n_vars;                           // variable bounds [0, 8]
     let n_constraints = n_c1 + n_c3 + n_c5;
     let total_rows = n_constraints + n_bounds;
@@ -524,7 +568,7 @@ pub fn solve(
     let mut row = 0;
 
     // Precompute lookups: chunk → vars, task → vars
-    let mut chunk_to_vars: Vec<Vec<usize>> = vec![vec![]; TOTAL_CHUNKS];
+    let mut chunk_to_vars: Vec<Vec<usize>> = vec![vec![]; total_chunks];
     let mut task_to_vars: Vec<Vec<(usize, usize)>> = vec![vec![]; n]; // (var_idx, chunk)
     for (var, &(i, c)) in x_vars.iter().enumerate() {
         chunk_to_vars[c].push(var);
@@ -533,7 +577,7 @@ pub fn solve(
 
     // ── C1: Chunk capacity ──
     // Σ_i x_{ic} ≤ C(c) for all c
-    for c in 0..TOTAL_CHUNKS {
+    for c in 0..total_chunks {
         for &var in &chunk_to_vars[c] {
             coo.push((row, var, 1.0));
         }
@@ -568,7 +612,7 @@ pub fn solve(
         let w_i = tasks[i].w;
         let w_j = tasks[j].w;
 
-        for c in 0..TOTAL_CHUNKS {
+        for c in 0..total_chunks {
             if w_i > 0.0 && w_j > 0.0 {
                 // Cumulative: all vars for task i with chunk ≤ c
                 for &(var, vc) in &task_to_vars[i] {
@@ -594,7 +638,7 @@ pub fn solve(
     for v in 0..n_vars {
         coo.push((n_constraints + v, v, 1.0));
         l_bounds.push(0.0);
-        u_bounds.push(SLOTS_PER_CHUNK);
+        u_bounds.push(slots_per_chunk);
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -666,7 +710,7 @@ pub fn solve(
     let mut output = SchedulerOutput {
         allocations: vec![], task_info: vec![], parked: vec![],
         duals: DualInfo { time_prices: vec![], energy_prices: vec![] },
-        horizon_days: HORIZON_DAYS, chunks_per_day: CHUNKS_PER_DAY,
+        horizon_days: cfg.horizon_days, chunks_per_day: cfg.chunks_per_day,
         errors: vec![],
         raw_priorities: vec![],
         packing_trace: vec![],
@@ -708,7 +752,7 @@ pub fn solve(
                     let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, &cap, n);
                     output.packing_trace = trace;
                     build_output_from_schedule(&schedule, &x_vars, tasks, params,
-                        &tag_set, &efficiency, n_c1, n_c2, start_h, &s, &mut output);
+                        &tag_set, &efficiency, n_c1, n_c2, start_h, &s, &mut output, cfg);
                 },
                 osqp::Status::PrimalInfeasible(_) => {
                     output.errors.push("QP is infeasible: cannot satisfy all task deadlines + capacity constraints simultaneously. Try relaxing deadlines or reducing task sizes.".to_string());
@@ -736,7 +780,7 @@ pub fn solve(
                     let (schedule, trace) = greedy_pack_lambda(&lambda, tasks, &cap, n);
                     output.packing_trace = trace;
                     build_output_from_schedule(&schedule, &x_vars, tasks, params,
-                        &tag_set, &efficiency, n_c1, n_c2, start_h, &s, &mut output);
+                        &tag_set, &efficiency, n_c1, n_c2, start_h, &s, &mut output, cfg);
                 },
                 other => {
                     output.errors.push(format!("Solver failed: {:?}", other));
@@ -927,7 +971,7 @@ fn greedy_pack_lambda(
     }
 
     // Capacity check: verify no chunk is over-allocated
-    let mut chunk_totals = vec![0.0f64; TOTAL_CHUNKS];
+    let mut chunk_totals = vec![0.0f64; cap.len()];
     for &(_, c, slots) in &schedule {
         chunk_totals[c] += slots;
     }
@@ -953,6 +997,7 @@ fn build_output_from_schedule(
     start_h: usize,
     sol: &osqp::Solution,
     output: &mut SchedulerOutput,
+    cfg: &ChunkConfig,
 ) {
     let y = sol.y();
 
@@ -966,8 +1011,8 @@ fn build_output_from_schedule(
     for c in chunks {
         output.allocations.push(ChunkAllocation {
             chunk: c,
-            day: chunk_to_day(c, start_h),
-            hour_start: chunk_to_hour(c, start_h),
+            day: chunk_to_day(c, start_h, cfg),
+            hour_start: chunk_to_hour(c, start_h, cfg),
             tasks: chunk_map.remove(&c).unwrap(),
         });
     }
@@ -1021,7 +1066,7 @@ fn build_output_from_schedule(
     }
 
     // Dual variables
-    for c in 0..TOTAL_CHUNKS {
+    for c in 0..cfg.total_chunks() {
         if c < y.len() {
             let mu = (-y[c]).max(0.0);
             if mu > 0.01 { output.duals.time_prices.push((c, mu)); }

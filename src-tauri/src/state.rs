@@ -425,11 +425,20 @@ impl GlobalState {
                     });
                 if let Ok(dt) = comp_local {
                     let dow = dt.format("%u").to_string().parse::<usize>().unwrap_or(1); // 1=Mon..7=Sun
-                    let chunk = (dt.hour() as usize / 4) + 1; // 1–6
+                    // Round completion hour to chunk boundary using hours_per_chunk from config
+                    let hpc: usize = sqlx::query_scalar::<_, String>(
+                        "SELECT value FROM settings WHERE key = 'chunk_config'"
+                    )
+                        .fetch_optional(pool).await.unwrap_or(None)
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v["chunks_per_day"].as_u64())
+                        .map(|cpd| 24 / cpd as usize)
+                        .unwrap_or(4); // default: 6 chunks/day = 4h each
+                    let hour = (dt.hour() as usize / hpc) * hpc; // wall-clock start hour of chunk
                     let slots = crate::scheduler::effort_to_slots(task.effort);
                     let _ = crate::energy::update_dirichlet(
                         pool,
-                        &[(dow, chunk, tag.clone(), slots)],
+                        &[(dow, hour, tag.clone(), slots)],
                     ).await;
                 }
             }

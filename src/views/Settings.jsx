@@ -5,9 +5,24 @@ import Training from "@views/Training.jsx";
 import Debug from "@views/Debug.jsx";
 import "./Settings.css";
 
+const VALID_CHUNKS = [1, 2, 3, 4, 6, 8, 12, 24];
+
+// Default labels for each chunks_per_day value
+const DEFAULT_LABELS = {
+    1: ["all day"],
+    2: ["day", "night"],
+    3: ["morning", "afternoon", "evening"],
+    4: ["morning", "midday", "afternoon", "evening"],
+    6: ["midnight", "dawn", "morning", "afternoon", "evening", "night"],
+    8: ["late night", "dawn", "early morning", "morning", "midday", "afternoon", "evening", "night"],
+    12: Array.from({ length: 12 }, (_, i) => `${String(i * 2).padStart(2, "0")}:00`),
+    24: Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}:00`),
+};
+
 export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
     const [subView, setSubView] = useState(null); // "training" | "debug" | null
     const [calendars, setCalendars] = useState([]);
+    const [chunkConfig, setChunkConfig] = useState(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -16,9 +31,39 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
                 const val = await invoke("get_setting", { key: "calendars" });
                 if (val) setCalendars(JSON.parse(val));
             } catch {}
+            try {
+                const cfg = await invoke("get_chunk_config");
+                setChunkConfig(cfg);
+            } catch {}
             setLoading(false);
         })();
     }, []);
+
+    const saveChunkConfig = useCallback(async (cfg) => {
+        setChunkConfig(cfg);
+        try {
+            await invoke("set_chunk_config", { config: cfg });
+            if (triggerRebalance) triggerRebalance();
+        } catch (e) { console.error("Failed to save chunk config:", e); }
+    }, [triggerRebalance]);
+
+    const updateChunksPerDay = (val) => {
+        const cpd = parseInt(val, 10);
+        if (!VALID_CHUNKS.includes(cpd)) return;
+        const labels = DEFAULT_LABELS[cpd] || Array.from({ length: cpd }, (_, i) => `chunk ${i + 1}`);
+        saveChunkConfig({ ...chunkConfig, chunks_per_day: cpd, labels });
+    };
+
+    const updateHorizon = (val) => {
+        const h = parseInt(val, 10);
+        if (h >= 1 && h <= 60) saveChunkConfig({ ...chunkConfig, horizon_days: h });
+    };
+
+    const updateLabel = (i, value) => {
+        const labels = [...chunkConfig.labels];
+        labels[i] = value;
+        saveChunkConfig({ ...chunkConfig, labels });
+    };
 
     const save = useCallback(async (urls) => {
         setCalendars(urls);
@@ -73,6 +118,70 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
                         <i className="fa-solid fa-plus" />
                     </div>
                 </div>
+
+                {chunkConfig && (
+                    <div className="settings-section">
+                        <div className="settings-section-label">{strings.VIEWS__SETTINGS_GRID}</div>
+                        <div className="settings-section-hint">{strings.VIEWS__SETTINGS_GRID_HINT}</div>
+
+                        <div className="settings-grid-row">
+                            <span className="settings-grid-field-label">{strings.VIEWS__SETTINGS_GRID_CHUNKS}</span>
+                            <div className="settings-grid-chips">
+                                {VALID_CHUNKS.map(v => (
+                                    <div
+                                        key={v}
+                                        className={`settings-grid-chip${v === chunkConfig.chunks_per_day ? " active" : ""}`}
+                                        onClick={() => updateChunksPerDay(v)}
+                                    >
+                                        {v}
+                                    </div>
+                                ))}
+                            </div>
+                            <span className="settings-grid-derived">
+                                {24 / chunkConfig.chunks_per_day}h each, {(24 / chunkConfig.chunks_per_day) * 2} slots
+                            </span>
+                        </div>
+
+                        <div className="settings-grid-row">
+                            <span className="settings-grid-field-label">{strings.VIEWS__SETTINGS_GRID_HORIZON}</span>
+                            <input
+                                className="settings-grid-input"
+                                type="number"
+                                min={1}
+                                max={60}
+                                value={chunkConfig.horizon_days}
+                                onChange={(e) => updateHorizon(e.target.value)}
+                            />
+                            <span className="settings-grid-derived">
+                                = {chunkConfig.chunks_per_day * chunkConfig.horizon_days} total chunks
+                            </span>
+                        </div>
+
+                        <div className="settings-grid-labels">
+                            <span className="settings-grid-field-label">{strings.VIEWS__SETTINGS_GRID_LABELS}</span>
+                            <div className="settings-grid-label-list">
+                                {chunkConfig.labels.map((label, i) => {
+                                    const hpc = 24 / chunkConfig.chunks_per_day;
+                                    const startH = i * hpc;
+                                    const endH = startH + hpc;
+                                    return (
+                                        <div key={i} className="settings-grid-label-row">
+                                            <span className="settings-grid-label-time">
+                                                {String(startH).padStart(2, "0")}:00–{String(endH).padStart(2, "0")}:00
+                                            </span>
+                                            <input
+                                                className="settings-grid-label-input"
+                                                value={label}
+                                                onChange={(e) => updateLabel(i, e.target.value)}
+                                                spellCheck={false}
+                                            />
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 <div className="settings-section">
                     <div className="settings-section-label">{strings.VIEWS__SETTINGS_TRAINING}</div>
