@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCachedChunkConfig, fetchChunkConfig } from "@api/chunkConfig.js";
 import strings from "@strings";
 import "./Training.css";
 
@@ -22,10 +23,8 @@ export default function Training({ onBack }) {
     const [trained, setTrained] = useState([]); // { text, tag, dow, chunk }
     const nextId = useRef(0);
 
-    const [chunkCfg, setChunkCfg] = useState({ chunks_per_day: 6, labels: strings.chunkLabels });
-    useEffect(() => {
-        invoke("get_chunk_config").then(setChunkCfg).catch(() => {});
-    }, []);
+    const [chunkCfg, setChunkCfg] = useState(getCachedChunkConfig);
+    useEffect(() => { fetchChunkConfig().then(setChunkCfg); }, []);
     const chunkLabels = chunkCfg.labels;
     const hoursPerChunk = 24 / chunkCfg.chunks_per_day;
 

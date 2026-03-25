@@ -4,17 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { updateTask } from "@api/tasks.js";
 import { snapshot } from "@api/utils.js";
 import { txSet, flushNow } from "@api/sync.js";
+import { getCachedChunkConfig, fetchChunkConfig } from "@api/chunkConfig.js";
 import moment from "moment";
 import strings from "@strings";
 import Editor from "@views/Editor.jsx";
 import "./Action.css";
 
 const DOW_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const DEFAULT_CHUNK_CONFIG = {
-    chunks_per_day: 6,
-    horizon_days: 14,
-    labels: strings.CHUNK_LABELS,
-};
 
 function getGreeting() {
     const h = new Date().getHours();
@@ -46,11 +42,9 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
     const loading = useSelector(state => state.tasks.loading);
     useEffect(() => { if (loading) dispatch(snapshot()); }, [loading, dispatch]);
 
-    // Load chunk config from backend
-    const [chunkCfg, setChunkCfg] = useState(DEFAULT_CHUNK_CONFIG);
-    useEffect(() => {
-        invoke("get_chunk_config").then(setChunkCfg).catch(() => {});
-    }, []);
+    // Load chunk config — cached synchronously after first fetch
+    const [chunkCfg, setChunkCfg] = useState(getCachedChunkConfig);
+    useEffect(() => { fetchChunkConfig().then(setChunkCfg); }, []);
     const hoursPerChunk = 24 / chunkCfg.chunks_per_day;
     const slotsPerChunk = hoursPerChunk * 2;
     const chunkLabels = chunkCfg.labels;

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCachedChunkConfig, fetchChunkConfig, setChunkConfigCache } from "@api/chunkConfig.js";
 import strings from "@strings";
 import Training from "@views/Training.jsx";
 import Debug from "@views/Debug.jsx";
@@ -22,7 +23,7 @@ const DEFAULT_LABELS = {
 export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
     const [subView, setSubView] = useState(null); // "training" | "debug" | null
     const [calendars, setCalendars] = useState([]);
-    const [chunkConfig, setChunkConfig] = useState(null);
+    const [chunkConfig, setChunkConfig] = useState(getCachedChunkConfig);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -32,7 +33,7 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
                 if (val) setCalendars(JSON.parse(val));
             } catch {}
             try {
-                const cfg = await invoke("get_chunk_config");
+                const cfg = await fetchChunkConfig();
                 setChunkConfig(cfg);
             } catch {}
             setLoading(false);
@@ -41,6 +42,7 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
 
     const saveChunkConfig = useCallback(async (cfg) => {
         setChunkConfig(cfg);
+        setChunkConfigCache(cfg); // update module-level cache for other views
         try {
             await invoke("set_chunk_config", { config: cfg });
             if (triggerRebalance) triggerRebalance();

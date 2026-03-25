@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useDispatch } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
 import { snapshot } from "@api/utils.js";
+import { getCachedChunkConfig, fetchChunkConfig } from "@api/chunkConfig.js";
 import strings from "@strings";
 import "./Debug.css";
 
@@ -29,14 +30,12 @@ function allocLabel(day, hourStart, horizonStart, hoursPerChunk) {
 export default function Debug() {
     const dispatch = useDispatch();
     const [schedule, setSchedule] = useState(null);
-    const [chunkCfg, setChunkCfg] = useState({ chunks_per_day: 6, horizon_days: 14, labels: strings.CHUNK_LABELS });
+    const [chunkCfg, setChunkCfg] = useState(getCachedChunkConfig);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [horizonStart] = useState(() => new Date());
 
-    useEffect(() => {
-        invoke("get_chunk_config").then(setChunkCfg).catch(() => {});
-    }, []);
+    useEffect(() => { fetchChunkConfig().then(setChunkCfg); }, []);
 
     const chunksPerDay = chunkCfg.chunks_per_day;
     const hoursPerChunk = 24 / chunksPerDay;

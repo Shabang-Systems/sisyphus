@@ -7,6 +7,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { rebalance } from "@api/ui.js";
 import { snapshot } from "@api/utils.js";
 import { initSyncListener, flushNow } from "@api/sync.js";
+import { fetchChunkConfig } from "@api/chunkConfig.js";
 import Auth from "@views/Auth.jsx";
 import Editor from "@views/Editor.jsx";
 import Browse from "@views/Browse.jsx";
@@ -189,13 +190,17 @@ function AppInner() {
         if (workspace) {
             (async () => {
                 let success = await invoke("load", { path: workspace });
-                if (success) setIsReady(true);
+                if (success) {
+                    fetchChunkConfig(); // warm cache before views mount
+                    setIsReady(true);
+                }
             })();
         }
     }, []);
 
     const auth = useCallback((path) => {
         localStorage.setItem("sisyphus__workspace", path);
+        fetchChunkConfig(); // warm cache before views mount
         setIsReady(true);
     }, []);
 
