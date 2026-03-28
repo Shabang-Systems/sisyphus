@@ -20,6 +20,8 @@ function getGreeting() {
 }
 
 function dayLabel(dayOffset) {
+    if (dayOffset === 0) return "Today";
+    if (dayOffset === 1) return "Tomorrow";
     const d = new Date();
     d.setDate(d.getDate() + dayOffset);
     return `${DOW_FULL[d.getDay()]}, ${d.getMonth() + 1}/${d.getDate()}`;
@@ -243,7 +245,7 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                 <div className="action-timeline">
                     {groups.map((item, i) =>
                         item.type === "day" ? (
-                            <div key={`day-${item.dayDiff}`} className="action-day-header">
+                            <div key={`day-${item.dayDiff}`} className={`action-day-header${item.dayDiff === 0 ? " today" : ""}${item.dayDiff < 0 ? " overdue" : ""}`}>
                                 <span className="action-day-label">{item.label}</span>
                             </div>
                         ) : (

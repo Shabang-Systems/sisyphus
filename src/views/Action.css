@@ -167,6 +167,14 @@
     color: var(--gray-3);
 }
 
+.action-day-header.today .action-day-label {
+    color: var(--blue);
+}
+
+.action-day-header.overdue .action-day-label {
+    color: var(--orange);
+}
+
 .action-loading {
     font-size: 13px;
     color: var(--gray-3);
