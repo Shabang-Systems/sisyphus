@@ -101,6 +101,52 @@ pub async fn get_calendar_freebusy(state: tauri::State<'_, GlobalState>) -> Resu
     Ok(grid)
 }
 
+#[derive(serde::Serialize)]
+pub struct CalendarDebugInfo {
+    pub urls: Vec<String>,
+    pub blocks: Vec<calendar::DebugBusyBlock>,
+    pub grid: Vec<f64>,
+    pub chunks_per_day: usize,
+    pub horizon_days: usize,
+    pub hours_per_chunk: usize,
+}
+
+/// Fresh-fetch calendar data for debugging: URLs, raw busy blocks with ICS metadata, and the computed grid.
+#[tauri::command]
+pub async fn get_calendar_debug(state: tauri::State<'_, GlobalState>) -> Result<CalendarDebugInfo, String> {
+    let pool_guard = state.pool.read().await;
+    let pool = pool_guard.as_ref().ok_or("No database loaded")?;
+
+    let cfg = load_chunk_config(pool).await;
+
+    let cal_urls_json = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'calendars'")
+        .fetch_optional(pool).await.map_err(|e| e.to_string())?.unwrap_or_else(|| "[]".to_string());
+    let cal_urls: Vec<String> = serde_json::from_str(&cal_urls_json).unwrap_or_default();
+
+    let (busy_blocks, debug_blocks) = if cal_urls.is_empty() {
+        (vec![], vec![])
+    } else {
+        calendar::fetch_busy_blocks_debug(&cal_urls, cfg.horizon_days).await
+    };
+
+    let grid = if busy_blocks.is_empty() {
+        vec![0.0f64; cfg.horizon_days * cfg.chunks_per_day]
+    } else {
+        calendar::busy_to_grid(&busy_blocks, &cfg)
+    };
+
+    *state.cal_grid_cache.write().await = Some(grid.clone());
+
+    Ok(CalendarDebugInfo {
+        urls: cal_urls,
+        blocks: debug_blocks,
+        grid,
+        chunks_per_day: cfg.chunks_per_day,
+        horizon_days: cfg.horizon_days,
+        hours_per_chunk: cfg.hours_per_chunk(),
+    })
+}
+
 /// Fetch calendar busy blocks, compute the absolute grid, and store in cache.
 async fn fetch_and_cache_cal_grid(state: &GlobalState) -> Vec<f64> {
     let pool_guard = state.pool.read().await;
@@ -157,7 +203,7 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
         .collect();
 
     // Load models
-    let dirichlet = energy::load_dirichlet(pool).await.map_err(|e| e.to_string())?;
+    let dirichlet = energy::load_dirichlet(pool, hours_per_chunk).await.map_err(|e| e.to_string())?;
     // Extract text from content JSON for NB tag prediction
     let text_re = regex::Regex::new(r#""text"\s*:\s*"([^"]+)""#).unwrap();
 
@@ -600,28 +646,6 @@ pub async fn set_chunk_config(config: ChunkConfig, state: tauri::State<'_, Globa
     Ok(())
 }
 
-// ── Training ──
-
-/// Train NB Model 2 (tag prediction) with explicit text+tag pairs.
-/// Does NOT create tasks in the database — only updates nb_tags / nb_tag_priors.
-#[tauri::command]
-pub async fn train_nb_tag(text: String, tag: String, state: tauri::State<'_, GlobalState>) -> Result<(), String> {
-    let pool_guard = state.pool.read().await;
-    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
-    nb::update_tag_model(pool, &text, &tag).await.map_err(|e| e.to_string())
-}
-
-/// Train Dirichlet energy model with explicit (dow, chunk, tag, slots) observations.
-/// Does NOT create tasks — directly updates dirichlet_state.
-#[tauri::command]
-pub async fn train_dirichlet(
-    observations: Vec<(usize, usize, String, f64)>,
-    state: tauri::State<'_, GlobalState>,
-) -> Result<(), String> {
-    let pool_guard = state.pool.read().await;
-    let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
-    energy::update_dirichlet(pool, &observations).await.map_err(|e| e.to_string())
-}
 
 /// Background sync: processes a batch of typed transactions, persists to SQLite,
 /// recomputes computed fields, and emits a 'sync-result' event with changed tasks.

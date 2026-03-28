@@ -10,9 +10,9 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { RRule } from "rrule";
 import moment from "moment";
-import { snapshot } from "@api/utils.js";
+import { snapshot, localISO } from "@api/utils.js";
 import { tick } from "@api/ui.js";
-import { updateTask, addTask, dropTask } from "@api/tasks.js";
+import { updateTask, addTask, dropTask, setParent } from "@api/tasks.js";
 import { txSet, txCreate, txDelete } from "@api/sync.js";
 import { v4 as uuid } from "uuid";
 import { invoke } from "@tauri-apps/api/core";
@@ -103,7 +103,7 @@ function serializeContent(node) {
 }
 
 function now() {
-    return new Date().toISOString().replace("T", " ").slice(0, 19);
+    return localISO();
 }
 
 function readDoc(doc) {
@@ -145,6 +145,10 @@ function getSubtree(tasks, focusId) {
 }
 
 // effective_due and is_deferred are computed by Rust and returned with each upsert
+
+// Module-level flag: when reparent is triggered from Action/Browse view, the reply jump
+// creates the new task in Planning, and the pipeline uses this to reverse the parent link.
+let pendingReparentViaJump = null;
 
 // --- Component ---
 
@@ -188,6 +192,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     const visible = useRef(new Map());
     const updateTimer = useRef(null);
     const pendingParentId = useRef(null);
+    const pendingReparentChild = useRef(null);  // taskId whose parent_id should be set to the newly created task
     const pendingRruleData = useRef(null);  // { rrule, tags, parent_id, start_date, due_date }
     const collapsedRootRef = useRef(null);
     const tasksRef = useRef(tasks);
@@ -220,7 +225,12 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
                 tr.setNodeMarkup(row.pmPos, undefined, { taskId: id });
 
-                let parentId = pendingParentId.current;
+                // Check for reparent (module-level flag for cross-editor, ref for same-editor)
+                const reparentChildId = pendingReparentViaJump || pendingReparentChild.current;
+                pendingReparentViaJump = null;
+                pendingReparentChild.current = null;
+
+                let parentId = reparentChildId ? null : pendingParentId.current;
                 pendingParentId.current = null;
 
                 if (collapsedRootRef.current && !parentId) {
@@ -256,6 +266,10 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
                     locked: scheduleDate ? true : false,
                     created_at: ts, updated_at: ts,
                 });
+                // Reparent: set the original task's parent to this newly created task
+                if (reparentChildId) {
+                    dispatch(setParent({ id: reparentChildId, parentId: id }));
+                }
                 visible.current.set(id, { content, position: row.position, created_at: ts });
             }
             tr.setMeta("sync", true);
@@ -473,31 +487,31 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     useEffect(() => {
         if (!jumpToTaskId || !editor || !isHydrated) return;
 
-        if (replyToTaskId) {
-            // 1. Insert new paragraph at end with parent link
-            pendingParentId.current = replyToTaskId;
-            const endPos = editor.state.doc.content.size;
-            editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
-            // 2. Focus it
-            editor.commands.focus("end");
-            // 3. Scroll to it
-            requestAnimationFrame(() => scrollToPos(editor.state.doc.content.size - 1));
-        } else {
-            // Jump without reply — just focus + scroll to the target
-            let targetPos = null;
-            editor.state.doc.descendants((node, pos) => {
-                if (node.type.name === "paragraph" && node.attrs.taskId === jumpToTaskId) {
-                    targetPos = pos;
+        // Defer ProseMirror dispatch out of React commit phase to avoid flushSync warning
+        // (Tiptap's NodeView renderer calls flushSync during dispatch).
+        setTimeout(() => {
+            if (replyToTaskId) {
+                pendingParentId.current = replyToTaskId;
+                const endPos = editor.state.doc.content.size;
+                editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
+                editor.commands.focus("end");
+                requestAnimationFrame(() => scrollToPos(editor.state.doc.content.size - 1));
+            } else {
+                let targetPos = null;
+                editor.state.doc.descendants((node, pos) => {
+                    if (node.type.name === "paragraph" && node.attrs.taskId === jumpToTaskId) {
+                        targetPos = pos;
+                    }
+                    return false;
+                });
+                if (targetPos != null) {
+                    editor.commands.setTextSelection(targetPos + 1);
+                    editor.commands.focus();
+                    requestAnimationFrame(() => scrollToPos(targetPos + 1));
                 }
-                return false;
-            });
-            if (targetPos != null) {
-                editor.commands.setTextSelection(targetPos + 1);
-                editor.commands.focus();
-                requestAnimationFrame(() => scrollToPos(targetPos + 1));
             }
-        }
-        if (onJumpHandled) onJumpHandled();
+            if (onJumpHandled) onJumpHandled();
+        }, 0);
     }, [jumpToTaskId, replyToTaskId, editor, onJumpHandled, isHydrated, scrollToPos]);
 
     // --- Find decoration refresh ---
@@ -648,7 +662,12 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         allTasksRef.current = sorted;
 
         // Browse/completed: first PAGE_SIZE (most relevant at top). Planning: last PAGE_SIZE (newest at bottom).
-        const startIdx = isBrowse ? 0 : Math.max(0, sorted.length - PAGE_SIZE);
+        // When a jump target is pending, expand the window to include it so arrows can render.
+        let startIdx = isBrowse ? 0 : Math.max(0, sorted.length - PAGE_SIZE);
+        if (!isBrowse && jumpToTaskIdRef.current) {
+            const targetIdx = sorted.findIndex(t => t.id === jumpToTaskIdRef.current);
+            if (targetIdx >= 0 && targetIdx < startIdx) startIdx = targetIdx;
+        }
         const endIdx = isBrowse ? Math.min(PAGE_SIZE, sorted.length) : sorted.length;
         const initialSlice = sorted.slice(startIdx, endIdx);
         loadedCountRef.current = initialSlice.length;
@@ -830,7 +849,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
     // --- Modal callbacks (optimistic: update Redux immediately, sync to Rust in background) ---
 
     const handleDateChange = useCallback((taskId, field, date) => {
-        const val = date ? date.toISOString() : null;
+        const val = date ? localISO(date) : null;
         if (field === "schedule") {
             dispatch(updateTask({ id: taskId, changes: { schedule: val, locked: !!date, updated_at: now() } }));
             txSet(taskId, "schedule", val);
@@ -838,7 +857,7 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         } else {
             const changes = { [field]: val, updated_at: now() };
             if (field === "start_date") {
-                changes.is_deferred = val ? val > new Date().toISOString() : false;
+                changes.is_deferred = date ? date.getTime() > Date.now() : false;
             }
             if (field === "due_date") {
                 // Optimistic: set effective_due immediately so the UI reflects the change.
@@ -891,14 +910,14 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
 
                 if (task.start_date && task.due_date) {
                     const durationMs = new Date(task.due_date) - new Date(task.start_date);
-                    newDue = new Date(new Date(task.due_date).getTime() + intervalMs).toISOString();
-                    newStart = new Date(new Date(newDue).getTime() - durationMs).toISOString();
+                    newDue = localISO(new Date(new Date(task.due_date).getTime() + intervalMs));
+                    newStart = localISO(new Date(new Date(newDue).getTime() - durationMs));
                 } else if (task.due_date) {
-                    newDue = new Date(new Date(task.due_date).getTime() + intervalMs).toISOString();
+                    newDue = localISO(new Date(new Date(task.due_date).getTime() + intervalMs));
                 } else if (task.start_date) {
-                    newStart = new Date(new Date(task.start_date).getTime() + intervalMs).toISOString();
+                    newStart = localISO(new Date(new Date(task.start_date).getTime() + intervalMs));
                 } else {
-                    newDue = new Date(Date.now() + intervalMs).toISOString();
+                    newDue = localISO(new Date(Date.now() + intervalMs));
                 }
 
                 if (newStart || newDue) {
@@ -1086,6 +1105,21 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         }
     }, [editor, onJumpToTask]);
 
+    const handleReparent = useCallback((taskId) => {
+        setDateModal(null); setRruleModal(null);
+        if (onJumpToTask) {
+            // Cross-editor reparent: set module-level flag, then use the normal reply jump.
+            // The planning Editor's pipeline will pick up pendingReparentViaJump.
+            pendingReparentViaJump = taskId;
+            onJumpToTask(taskId);
+        } else if (editor) {
+            pendingReparentChild.current = taskId;
+            const endPos = editor.state.doc.content.size;
+            editor.view.dispatch(editor.state.tr.insert(endPos, editor.state.schema.nodes.paragraph.create()));
+            editor.commands.focus("end");
+        }
+    }, [editor, onJumpToTask]);
+
     // Stable context — callbacks are all useCallbacks, tasksRef is a ref.
     // NodeViews read from tasksRef on mount/ProseMirror update, not on every Redux change.
     const taskContextValue = useMemo(() => ({
@@ -1097,8 +1131,9 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         openRruleModal,
         toggleCollapse,
         handleReply,
+        handleReparent,
         onTaskDrag: onTaskDragRef.current,
-    }), [completeTask, cycleEffort, toggleLock, openDateModal, openRruleModal, toggleCollapse, handleReply]);
+    }), [completeTask, cycleEffort, toggleLock, openDateModal, openRruleModal, toggleCollapse, handleReply, handleReparent]);
 
     // --- Render ---
 

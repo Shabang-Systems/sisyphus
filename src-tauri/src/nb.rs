@@ -3,10 +3,8 @@
 //! Predicts tag class for untagged tasks from bag-of-words of task text.
 //! Multinomial Naive Bayes produces a full posterior `p(k | b_i) ∈ Δ^{K-1}`.
 //!
-//! Used to substitute predicted tags for untagged tasks so the Dirichlet
-//! efficiency model can apply time-of-day preferences.
-//!
-//! Updates incrementally. No batch retraining required.
+//! Model is derived on-the-fly from tagged tasks in the database.
+//! No separate state tables or batch retraining required.
 
 use std::collections::HashMap;
 use anyhow::Result;
@@ -21,59 +19,48 @@ pub fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Loads NB tag model (tag prediction) from the database.
+/// Derives NB tag model from tagged tasks in the database.
 ///
 /// Returns:
 /// - Word-tag counts: `word → tag → count`
 /// - Tag priors: `tag → count`
 pub async fn load_tag_model(pool: &SqlitePool) -> Result<(HashMap<String, HashMap<String, i64>>, HashMap<String, i64>)> {
-    let word_rows: Vec<(String, String, i64)> = sqlx::query_as(
-        "SELECT word, tag, count FROM nb_tags"
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT content, tags FROM tasks WHERE tags != '[]' AND tags != ''"
     ).fetch_all(pool).await?;
 
-    let prior_rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT tag, count FROM nb_tag_priors"
-    ).fetch_all(pool).await?;
-
+    let text_re = regex::Regex::new(r#""text"\s*:\s*"([^"]+)""#).unwrap();
     let mut word_tag: HashMap<String, HashMap<String, i64>> = HashMap::new();
-    for (word, tag, count) in word_rows {
-        word_tag.entry(word).or_default().insert(tag, count);
+    let mut priors: HashMap<String, i64> = HashMap::new();
+
+    for (content, tags_json) in rows {
+        let tags: Vec<String> = match serde_json::from_str(&tags_json) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        let text: String = text_re.captures_iter(&content)
+            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if text.is_empty() { continue; }
+
+        let words = tokenize(&text);
+
+        for tag in &tags {
+            *priors.entry(tag.clone()).or_insert(0) += 1;
+
+            for word in &words {
+                *word_tag.entry(word.clone())
+                    .or_default()
+                    .entry(tag.clone())
+                    .or_insert(0) += 1;
+            }
+        }
     }
 
-    let priors: HashMap<String, i64> = prior_rows.into_iter().collect();
     Ok((word_tag, priors))
-}
-
-/// Updates NB Model 2 when the user tags a task.
-///
-/// Increments word-tag counts for each word in the task text, and the tag prior.
-pub async fn update_tag_model(
-    pool: &SqlitePool,
-    text: &str,
-    tag: &str,
-) -> Result<()> {
-    let words = tokenize(text);
-
-    for word in &words {
-        sqlx::query(
-            "INSERT INTO nb_tags (word, tag, count) VALUES (?, ?, 1) \
-             ON CONFLICT(word, tag) DO UPDATE SET count = count + 1"
-        )
-        .bind(word)
-        .bind(tag)
-        .execute(pool)
-        .await?;
-    }
-
-    sqlx::query(
-        "INSERT INTO nb_tag_priors (tag, count) VALUES (?, 1) \
-         ON CONFLICT(tag) DO UPDATE SET count = count + 1"
-    )
-    .bind(tag)
-    .execute(pool)
-    .await?;
-
-    Ok(())
 }
 
 /// Predicts tag posterior `p(k | text)` using multinomial Naive Bayes.

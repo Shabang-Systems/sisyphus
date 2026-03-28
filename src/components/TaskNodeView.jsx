@@ -1,4 +1,4 @@
-import { createContext, useContext, useCallback, useSyncExternalStore } from "react";
+import { createContext, useContext, useCallback, useState, useEffect, useSyncExternalStore } from "react";
 import { NodeViewWrapper, NodeViewContent } from "@tiptap/react";
 import moment from "moment";
 import strings from "@strings";
@@ -57,7 +57,7 @@ function useTaskState(task) {
 
 // --- Toolbar: shared between NodeView and StaticTaskView ---
 
-function TaskToolbar({ task, effort, locked, hasSchedule, hasStart, hasDue, hasRrule, onEffort, onLock, onSchedule, onStart, onDue, onRrule, onCollapse, onReply }) {
+function TaskToolbar({ task, effort, locked, hasSchedule, hasStart, hasDue, hasRrule, onEffort, onLock, onSchedule, onStart, onDue, onRrule, onCollapse, onReply, onReparent, shiftHeld }) {
     return (
         <div className="task-toolbar" contentEditable={false}>
             <span className="task-sidebar-btn task-effort-btn" onClick={onEffort} data-tooltip-id="rootp" data-tooltip-content={strings.TOOLTIPS.EFFORT}>
@@ -94,9 +94,9 @@ function TaskToolbar({ task, effort, locked, hasSchedule, hasStart, hasDue, hasR
                 data-tooltip-id="rootp" data-tooltip-content={strings.TOOLTIPS.COLLAPSE}>
                 <i className="fa-solid fa-compress" />
             </span>
-            <span className="task-sidebar-btn task-reply-btn" onClick={onReply}
-                data-tooltip-id="rootp" data-tooltip-content={strings.TOOLTIPS.ACTION_REPLY}>
-                <i className="fa-solid fa-angles-left" />
+            <span className="task-sidebar-btn task-reply-btn" onClick={shiftHeld ? onReparent : onReply}
+                data-tooltip-id="rootp" data-tooltip-content={shiftHeld ? strings.TOOLTIPS.ACTION_REPARENT : strings.TOOLTIPS.ACTION_REPLY}>
+                <i className={shiftHeld ? "fa-solid fa-angles-right" : "fa-solid fa-angles-left"} />
             </span>
         </div>
     );
@@ -172,6 +172,15 @@ export default function TaskNodeView({ node, editor, getPos }) {
     const ctx = useContext(TaskContext);
     const state = useTaskState(task);
 
+    const [shiftHeld, setShiftHeld] = useState(false);
+    useEffect(() => {
+        const down = (e) => { if (e.key === "Shift") setShiftHeld(true); };
+        const up = (e) => { if (e.key === "Shift") setShiftHeld(false); };
+        window.addEventListener("keydown", down);
+        window.addEventListener("keyup", up);
+        return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+    }, []);
+
     const stop = useCallback((e) => { e.stopPropagation(); e.preventDefault(); }, []);
 
     const onDividerClick = useCallback((e) => {
@@ -194,6 +203,7 @@ export default function TaskNodeView({ node, editor, getPos }) {
     const onRrule = useCallback((e) => { stop(e); if (taskId) ctx?.openRruleModal(taskId); }, [taskId, ctx, stop]);
     const onCollapse = useCallback((e) => { stop(e); if (taskId) ctx?.toggleCollapse(taskId); }, [taskId, ctx, stop]);
     const onReply = useCallback((e) => { stop(e); if (taskId) ctx?.handleReply(taskId); }, [taskId, ctx, stop]);
+    const onReparent = useCallback((e) => { stop(e); if (taskId) ctx?.handleReparent(taskId); }, [taskId, ctx, stop]);
     const onDragHandle = useCallback((e) => {
         if (taskId && ctx?.onTaskDrag) ctx.onTaskDrag(taskId, e);
     }, [taskId, ctx]);
@@ -219,7 +229,8 @@ export default function TaskNodeView({ node, editor, getPos }) {
                 <TaskToolbar {...state} task={task}
                     onEffort={onEffort} onLock={onLock} onSchedule={onSchedule}
                     onStart={onStart} onDue={onDue} onRrule={onRrule}
-                    onCollapse={onCollapse} onReply={onReply} />
+                    onCollapse={onCollapse} onReply={onReply} onReparent={onReparent}
+                    shiftHeld={shiftHeld} />
             </div>
         </NodeViewWrapper>
     );

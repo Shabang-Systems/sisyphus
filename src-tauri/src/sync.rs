@@ -164,13 +164,13 @@ pub async fn process_transactions(
         .filter_map(|id| cache.get(id).map(|t| (id.clone(), (t.effective_due.clone(), t.is_deferred))))
         .collect();
 
-    let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let now = chrono::Local::now();
     let mut due_cache = HashMap::new();
     let mut defer_cache = HashMap::new();
 
     for aid in &all_affected {
         let new_due = compute_effective_due_map(aid, &cache, &children_idx, &mut due_cache);
-        let new_deferred = compute_is_deferred_map(aid, &cache, &now_str, &mut defer_cache);
+        let new_deferred = compute_is_deferred_map(aid, &cache, &now, &mut defer_cache);
         if let Some(t) = cache.get_mut(aid) {
             t.effective_due = new_due;
             t.is_deferred = new_deferred;

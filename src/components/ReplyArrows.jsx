@@ -69,6 +69,11 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
         buildArrows();
     }, [updatePositions, buildArrows]);
 
+    // Keep a ref to the latest refresh so the MutationObserver always calls the current version
+    // without needing to disconnect/reconnect (which loses mutations during the gap).
+    const refreshRef = useRef(refresh);
+    refreshRef.current = refresh;
+
     // On tasks/collapse change: update positions and rebuild arrows.
     useEffect(() => {
         refresh();
@@ -89,7 +94,7 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
             if (rafPending.current) return;
             rafPending.current = true;
             requestAnimationFrame(() => {
-                refresh();
+                refreshRef.current();
                 rafPending.current = false;
             });
         });
@@ -98,7 +103,7 @@ export default function ReplyArrows({ editorRef, collapsedRoot, focusedTaskId })
             attributes: true, attributeFilter: ["data-task-id"],
         });
         return () => observer.disconnect();
-    }, [editorRef, refresh]);
+    }, [editorRef]);
 
     // Hover tracking
     useEffect(() => {

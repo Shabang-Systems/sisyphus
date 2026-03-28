@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { getCachedChunkConfig, fetchChunkConfig } from "@api/chunkConfig.js";
 import strings from "@strings";
 import "./Training.css";
@@ -26,7 +25,7 @@ export default function Training({ onBack }) {
     const [chunkCfg, setChunkCfg] = useState(getCachedChunkConfig);
     useEffect(() => { fetchChunkConfig().then(setChunkCfg); }, []);
     const chunkLabels = chunkCfg.labels;
-    const hoursPerChunk = 24 / chunkCfg.chunks_per_day;
+
 
     const handleKeyDown = useCallback((e) => {
         if (e.key !== "Enter") return;
@@ -38,8 +37,6 @@ export default function Training({ onBack }) {
         setTasks(prev => [...prev, task]);
         setInput("");
 
-        // Train NB tag model immediately
-        invoke("train_nb_tag", { text, tag }).catch(console.error);
     }, [input]);
 
     const removeTask = useCallback((id) => {
@@ -56,15 +53,6 @@ export default function Training({ onBack }) {
         const task = tasks.find(t => t.id === selected);
         if (!task) return;
 
-        // Train Dirichlet: dow is 1-indexed (Mon=1..Sun=7), hour is wall-clock start
-        const dow = dowIdx + 1;
-        const hour = chunkIdx * hoursPerChunk;
-        const slots = 2.0; // Default S-size = 2 slots
-
-        invoke("train_dirichlet", {
-            observations: [[dow, hour, task.tag, slots]],
-        }).catch(console.error);
-
         setTrained(prev => [...prev, {
             text: task.text,
             tag: task.tag,
@@ -75,7 +63,7 @@ export default function Training({ onBack }) {
         // Remove from task list, clear selection
         setTasks(prev => prev.filter(t => t.id !== selected));
         setSelected(null);
-    }, [selected, tasks, hoursPerChunk]);
+    }, [selected, tasks]);
 
     // Build grid data from trained observations
     const gridData = {};

@@ -56,6 +56,7 @@ export default {
         COLLAPSE: "Focus mode",
         ACTION_VISIT: "View in planning",
         ACTION_REPLY: "Reply to task",
+        ACTION_REPARENT: "Reparent under new task",
         ACTION_SCHEDULE: "Schedule date",
         ACTION_LOCK: "Auto-schedule",
         ACTION_UNLOCK: "Auto-schedule",

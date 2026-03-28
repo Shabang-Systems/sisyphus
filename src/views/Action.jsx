@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
 import { updateTask } from "@api/tasks.js";
-import { snapshot } from "@api/utils.js";
+import { snapshot, localISO } from "@api/utils.js";
 import { txSet, flushNow } from "@api/sync.js";
 import { getCachedChunkConfig, fetchChunkConfig } from "@api/chunkConfig.js";
 import moment from "moment";
@@ -25,7 +25,7 @@ function dayLabel(dayOffset) {
     return `${DOW_FULL[d.getDay()]}, ${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-function now() { return new Date().toISOString().replace("T", " ").slice(0, 19); }
+function now() { return localISO(); }
 
 export default function Action({ onJumpToTask, triggerRebalance, onViewChange }) {
     const dispatch = useDispatch();
@@ -92,7 +92,7 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                 d.setHours(dt.chunkIdx * hoursPerChunk, 0, 0, 0);
                 const task = taskMap.current.get(tid);
                 if (task) {
-                    const sched = d.toISOString();
+                    const sched = localISO(d);
                     dispatch(updateTask({ id: tid, changes: { schedule: sched, locked: true, updated_at: now() } }));
                     txSet(tid, "schedule", sched);
                     txSet(tid, "locked", true);
@@ -263,7 +263,7 @@ export default function Action({ onJumpToTask, triggerRebalance, onViewChange })
                                             const d = new Date();
                                             d.setDate(d.getDate() + item.dayDiff);
                                             d.setHours(item.chunkIdx * hoursPerChunk, 0, 0, 0);
-                                            return d.toISOString();
+                                            return localISO(d);
                                         })()}
                                     />
                                 </div>

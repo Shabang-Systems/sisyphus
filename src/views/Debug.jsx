@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { useDispatch } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
-import { snapshot } from "@api/utils.js";
+import { snapshot, localISO } from "@api/utils.js";
 import { getCachedChunkConfig, fetchChunkConfig } from "@api/chunkConfig.js";
+import moment from "moment";
 import strings from "@strings";
 import "./Debug.css";
 
@@ -58,6 +59,20 @@ export default function Debug() {
 
     useEffect(() => { solve(); }, [solve]);
 
+    // Calendar freebusy debug
+    const [calDebug, setCalDebug] = useState(null);
+    const [calLoading, setCalLoading] = useState(false);
+    const [calError, setCalError] = useState(null);
+    const fetchCalDebug = useCallback(async () => {
+        setCalLoading(true);
+        setCalError(null);
+        try {
+            setCalDebug(await invoke("get_calendar_debug"));
+        } catch (e) { setCalError(String(e)); }
+        setCalLoading(false);
+    }, []);
+    useEffect(() => { fetchCalDebug(); }, [fetchCalDebug]);
+
     const acceptTask = useCallback(async (taskId, chunkIdx) => {
         const dayOffset = Math.floor(chunkIdx / chunksPerDay);
         const hourStart = (chunkIdx % chunksPerDay) * hoursPerChunk;
@@ -65,7 +80,7 @@ export default function Debug() {
         d.setDate(d.getDate() + dayOffset);
         d.setHours(hourStart, 0, 0, 0);
         try {
-            await invoke("accept_task_schedule", { id: taskId, schedule: d.toISOString() });
+            await invoke("accept_task_schedule", { id: taskId, schedule: localISO(d) });
             dispatch(snapshot());
             solve();
         } catch (e) { setError(String(e)); }
@@ -85,6 +100,110 @@ export default function Debug() {
             {schedule?.errors?.map((e, i) => <div key={i} className="debug-error">{e}</div>)}
 
             <div className="debug-content">
+                {/* ── Calendar Freebusy Debug ── */}
+                <section className="debug-section">
+                    <h3>
+                        Calendar Freebusy
+                        <button className="debug-btn" onClick={fetchCalDebug} disabled={calLoading} style={{marginLeft: 8, fontSize: "0.75em"}}>
+                            <i className="fa-solid fa-rotate" /> Refresh
+                        </button>
+                    </h3>
+                    {calError && <div className="debug-error">{calError}</div>}
+                    {calLoading && !calDebug && <div className="debug-loading">Fetching calendars...</div>}
+                    {calDebug && <>
+                        <div className="debug-explain-stats">
+                            <span>URLs: <strong>{calDebug.urls.length}</strong></span>
+                            <span>Busy blocks: <strong>{calDebug.blocks.length}</strong></span>
+                            <span>Grid: <strong>{calDebug.horizon_days}d × {calDebug.chunks_per_day} chunks</strong></span>
+                        </div>
+                        {calDebug.urls.length === 0 && <p className="debug-hint">No calendar URLs configured. Set the "calendars" setting to an array of ICS URLs.</p>}
+                        {calDebug.urls.length > 0 && (
+                            <div style={{fontSize: "0.8em", opacity: 0.7, marginBottom: 8}}>
+                                {calDebug.urls.map((u, i) => <div key={i} style={{wordBreak: "break-all"}}>{u}</div>)}
+                            </div>
+                        )}
+
+                        {calDebug.blocks.length > 0 && (
+                            <div style={{marginBottom: 12}}>
+                                <h4 style={{margin: "8px 0 4px"}}>Busy Blocks ({calDebug.blocks.length})</h4>
+                                <table className="debug-table">
+                                    <thead>
+                                        <tr><th>Event</th><th>Start</th><th>End</th><th>Dur</th><th>Day</th><th>Chunk</th><th>Raw ICS</th><th>Flags</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        {calDebug.blocks.map((b, i) => {
+                                            const s = new Date(b.start);
+                                            const e = new Date(b.end);
+                                            const dayDiff = Math.floor((s - new Date(new Date().setHours(0,0,0,0))) / 86400000);
+                                            const chunk = Math.floor(s.getHours() / calDebug.hours_per_chunk);
+                                            const sameDay = s.toDateString() === e.toDateString();
+                                            const flags = [
+                                                b.all_day ? "ALL-DAY" : null,
+                                                b.transparent ? "TRANSP" : null,
+                                                b.tzid ? `TZ:${b.tzid}` : null,
+                                            ].filter(Boolean).join(", ");
+                                            return (
+                                                <tr key={i} style={b.transparent ? {opacity: 0.4} : undefined}>
+                                                    <td style={{maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}
+                                                        title={b.summary}>{b.summary || "—"}</td>
+                                                    <td>{moment(b.start).format("ddd M/D h:mm a")}</td>
+                                                    <td>{sameDay ? moment(b.end).format("h:mm a") : moment(b.end).format("ddd M/D h:mm a")}</td>
+                                                    <td>{b.duration_min >= 60 ? `${(b.duration_min/60).toFixed(1)}h` : `${b.duration_min}m`}</td>
+                                                    <td>{dayDiff === 0 ? "today" : dayDiff > 0 ? `+${dayDiff}d` : `${dayDiff}d`}</td>
+                                                    <td>c{chunk}</td>
+                                                    <td style={{fontSize: "0.75em", opacity: 0.6, fontFamily: "monospace"}}>{b.raw_start} → {b.raw_end}</td>
+                                                    <td style={{fontSize: "0.75em"}}>{flags || "—"}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                        {(() => {
+                            const grid = calDebug.grid;
+                            const cpd = calDebug.chunks_per_day;
+                            const hpc = calDebug.hours_per_chunk;
+                            const spc = hpc * 2;
+                            const dayLabel = (d) => {
+                                const date = new Date(horizonStart);
+                                date.setDate(date.getDate() + d);
+                                return `${DOW_LABELS[(date.getDay() + 6) % 7]} ${date.getMonth()+1}/${date.getDate()}`;
+                            };
+                            return (
+                                <div>
+                                    <h4 style={{margin: "8px 0 4px"}}>Grid (slots busy per chunk, max {spc})</h4>
+                                    <div className="debug-energy-grid">
+                                        <div className="debug-energy-grid-header">
+                                            <div className="debug-energy-grid-corner" />
+                                            {chunkHours.map((h, i) => <div key={i} className="debug-energy-grid-col">{h}</div>)}
+                                        </div>
+                                        {[...Array(calDebug.horizon_days)].map((_, d) => (
+                                            <div key={d} className="debug-energy-grid-row">
+                                                <div className="debug-energy-grid-row-label">{dayLabel(d)}</div>
+                                                {[...Array(cpd)].map((_, c) => {
+                                                    const idx = d * cpd + c;
+                                                    const val = idx < grid.length ? grid[idx] : 0;
+                                                    const frac = val / spc;
+                                                    const bg = val > 0.01
+                                                        ? `rgba(220, 80, 60, ${0.08 + frac * 0.5})`
+                                                        : undefined;
+                                                    return (
+                                                        <div key={c} className="debug-energy-grid-cell" style={bg ? { background: bg } : undefined}>
+                                                            {val > 0.01 ? val.toFixed(1) : ""}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                    </>}
+                </section>
+
                 {loading && !schedule && <div className="debug-loading">{strings.VIEWS__DEBUG_LOADING}</div>}
 
                 {schedule && <>

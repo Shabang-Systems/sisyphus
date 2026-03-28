@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::str::FromStr;
@@ -83,7 +82,7 @@ fn compute_effective_due(
     for child in tasks.iter() {
         if child.parent_id.as_deref() == Some(task_id) && child.completed_at.is_none() {
             if let Some(child_due) = compute_effective_due(&child.id, tasks, cache) {
-                if earliest.is_none() || child_due < *earliest.as_ref().unwrap() {
+                if earliest.is_none() || is_date_earlier(&child_due, earliest.as_ref().unwrap()) {
                     earliest = Some(child_due);
                 }
             }
@@ -113,7 +112,7 @@ pub fn compute_effective_due_map(
             if let Some(child) = task_map.get(child_id) {
                 if child.completed_at.is_some() { continue; }
                 if let Some(child_due) = compute_effective_due_map(child_id, task_map, children_map, cache) {
-                    if earliest.is_none() || child_due < *earliest.as_ref().unwrap() {
+                    if earliest.is_none() || is_date_earlier(&child_due, earliest.as_ref().unwrap()) {
                         earliest = Some(child_due);
                     }
                 }
@@ -128,7 +127,7 @@ pub fn compute_effective_due_map(
 pub fn compute_is_deferred_map(
     task_id: &str,
     task_map: &std::collections::HashMap<String, Task>,
-    now: &str,
+    now: &chrono::DateTime<chrono::Local>,
     cache: &mut std::collections::HashMap<String, bool>,
 ) -> bool {
     if let Some(&cached) = cache.get(task_id) {
@@ -146,9 +145,11 @@ pub fn compute_is_deferred_map(
     }
 
     if let Some(ref start) = task.start_date {
-        if start.as_str() > now {
-            cache.insert(task_id.to_string(), true);
-            return true;
+        if let Some(start_dt) = parse_date_to_local(start) {
+            if start_dt > *now {
+                cache.insert(task_id.to_string(), true);
+                return true;
+            }
         }
     }
 
@@ -162,10 +163,32 @@ pub fn compute_is_deferred_map(
     result
 }
 
+/// Parse a date string (RFC 3339 or naive "%Y-%m-%dT%H:%M:%S" / "%Y-%m-%d %H:%M:%S") into local DateTime.
+fn parse_date_to_local(s: &str) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::{Local, NaiveDateTime, TimeZone};
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        Some(dt.with_timezone(&Local))
+    } else if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        Local.from_local_datetime(&dt).single()
+    } else if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        Local.from_local_datetime(&dt).single()
+    } else {
+        None
+    }
+}
+
+/// Compare two date strings by actual timestamp (not lexicographic). Returns true if a < b.
+fn is_date_earlier(a: &str, b: &str) -> bool {
+    match (parse_date_to_local(a), parse_date_to_local(b)) {
+        (Some(da), Some(db)) => da < db,
+        _ => a < b,
+    }
+}
+
 fn compute_is_deferred(
     task_id: &str,
     tasks: &[Task],
-    now: &str,
+    now: &chrono::DateTime<chrono::Local>,
     cache: &mut std::collections::HashMap<String, bool>,
 ) -> bool {
     if let Some(&cached) = cache.get(task_id) {
@@ -183,9 +206,11 @@ fn compute_is_deferred(
     }
 
     if let Some(ref start) = task.start_date {
-        if start.as_str() > now {
-            cache.insert(task_id.to_string(), true);
-            return true;
+        if let Some(start_dt) = parse_date_to_local(start) {
+            if start_dt > *now {
+                cache.insert(task_id.to_string(), true);
+                return true;
+            }
         }
     }
 
@@ -200,7 +225,7 @@ fn compute_is_deferred(
 }
 
 fn enrich_tasks(tasks: &mut Vec<Task>) {
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let now = chrono::Local::now();
     let snapshot: Vec<Task> = tasks.clone();
     let mut due_cache = std::collections::HashMap::new();
     let mut defer_cache = std::collections::HashMap::new();
@@ -346,8 +371,6 @@ impl GlobalState {
             let cache = self.task_cache.read().await;
             cache.get(&task.id).cloned()
         };
-        let old_tags = old_task.as_ref().map(|t| t.tags.clone()).unwrap_or_else(|| "[]".to_string());
-        let was_completed = old_task.as_ref().map(|t| t.completed_at.is_some()).unwrap_or(false);
         // Capture old computed fields for affected tasks before we update
         let before_computed: std::collections::HashMap<String, (Option<String>, bool)> = {
             let cache = self.task_cache.read().await;
@@ -392,58 +415,6 @@ impl GlobalState {
         .execute(pool)
         .await?;
 
-        // Update NB Model 2 if tags changed
-        if task.tags != old_tags && task.tags != "[]" {
-            let text_re = regex::Regex::new(r#""text"\s*:\s*"([^"]+)""#).unwrap();
-            let text: String = text_re.captures_iter(&task.content)
-                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !text.is_empty() {
-                if let Ok(tags) = serde_json::from_str::<Vec<String>>(&task.tags) {
-                    for tag in &tags {
-                        let _ = crate::nb::update_tag_model(pool, &text, tag).await;
-                    }
-                }
-            }
-        }
-
-        // Update Dirichlet energy model on task completion
-        let now_completed = task.completed_at.is_some();
-        if now_completed && !was_completed {
-            if let Some(ref completed_at) = task.completed_at {
-                let tag = if let Ok(tags) = serde_json::from_str::<Vec<String>>(&task.tags) {
-                    tags.into_iter().next().unwrap_or_else(|| "__untagged__".to_string())
-                } else {
-                    "__untagged__".to_string()
-                };
-                let comp_local = chrono::DateTime::parse_from_rfc3339(completed_at)
-                    .map(|d| d.with_timezone(&chrono::Local))
-                    .or_else(|_| {
-                        chrono::NaiveDateTime::parse_from_str(completed_at, "%Y-%m-%d %H:%M:%S")
-                            .map(|d| d.and_local_timezone(chrono::Local).single().unwrap_or_else(|| chrono::Local::now()))
-                    });
-                if let Ok(dt) = comp_local {
-                    let dow = dt.format("%u").to_string().parse::<usize>().unwrap_or(1); // 1=Mon..7=Sun
-                    // Round completion hour to chunk boundary using hours_per_chunk from config
-                    let hpc: usize = sqlx::query_scalar::<_, String>(
-                        "SELECT value FROM settings WHERE key = 'chunk_config'"
-                    )
-                        .fetch_optional(pool).await.unwrap_or(None)
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                        .and_then(|v| v["chunks_per_day"].as_u64())
-                        .map(|cpd| 24 / cpd as usize)
-                        .unwrap_or(4); // default: 6 chunks/day = 4h each
-                    let hour = (dt.hour() as usize / hpc) * hpc; // wall-clock start hour of chunk
-                    let slots = crate::scheduler::effort_to_slots(task.effort);
-                    let _ = crate::energy::update_dirichlet(
-                        pool,
-                        &[(dow, hour, tag.clone(), slots)],
-                    ).await;
-                }
-            }
-        }
-
         // Update in-memory cache with the new task data, then incrementally re-enrich affected set
         let changed = {
             let mut cache = self.task_cache.write().await;
@@ -470,7 +441,7 @@ impl GlobalState {
 
             // Collect affected set and incrementally re-enrich
             let affected_ids = Self::collect_affected(&task.id, &cache, &children_idx);
-            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+            let now = chrono::Local::now();
             let mut due_cache = std::collections::HashMap::new();
             let mut defer_cache = std::collections::HashMap::new();
 
@@ -787,7 +758,7 @@ impl GlobalState {
             }
 
             // Re-enrich
-            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+            let now = chrono::Local::now();
             let mut due_cache = std::collections::HashMap::new();
             let mut defer_cache = std::collections::HashMap::new();
 

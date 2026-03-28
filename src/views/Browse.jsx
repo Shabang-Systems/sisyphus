@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { invoke } from "@tauri-apps/api/core";
 import { search, addTask } from "@api/tasks.js";
 import { txCreate } from "@api/sync.js";
+import { localISO } from "@api/utils.js";
 import { v4 as uuid } from "uuid";
 import Editor from "@views/Editor.jsx";
 import strings from "@strings";
@@ -102,7 +103,7 @@ export default function Browse() {
     const createFromSearch = useCallback(() => {
         const normalized = query.replace(/[.*+?^${}()|[\]\\]/g, "");
         if (!normalized) return;
-        const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
+        const ts = localISO();
         const id = uuid();
         const task = {
             id,

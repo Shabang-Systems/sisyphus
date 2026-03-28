@@ -1,88 +1,78 @@
 //! # Dirichlet Energy Model
 //!
 //! Learns the user's energy distribution across tag classes for each
-//! (day-of-week, hour) pair. Keyed by the wall-clock start hour of each
-//! chunk (e.g. 0, 4, 8, 12, 16, 20 for the default 6-chunk grid).
-//! This decouples the model from the chunk count — changing the grid
-//! does not invalidate training data.
+//! (day-of-week, hour) pair, derived on-the-fly from completed tasks.
 //!
 //! ## Structure
 //!
 //! Each Dirichlet `m ∈ {1..7} × hours` has concentration `ξ_m ∈ ℝ_{>0}^K`.
 //!
 //! The posterior mean `E[θ_{mk}] = ξ_{mk} / Σ_{k'} ξ_{mk'}` gives the fraction
-//! of chunk m's capacity allocated to tag class k. This multiplied by the physical
-//! capacity C(c) gives the energy budget C_k(c).
+//! of chunk m's capacity allocated to tag class k.
 //!
-//! ## Update Rule
+//! ## Computation
 //!
-//! When work is observed (task completed or day ends):
+//! For each completed task, we compute `(dow, hour, tag, slots)` from
+//! `completed_at`, then weight by `ρ^(weeks_since_completion)` for exponential
+//! decay. The sum of weighted slots plus a uniform prior of 1.0 gives ξ.
 //!
-//! ```text
-//! ξ_{m(c), k}  ←  ρ · ξ_{m(c), k}  +  n_{ck}
-//! ```
-//!
-//! where `n_{ck}` is the observed slots of class-k work in chunk c,
-//! and `ρ = 0.95` is the exponential forgetting factor.
-//!
-//! Each (dow, hour) Dirichlet gets one observation per week.
-//! Half-life ≈ 14 observations = 14 weeks. Old habits fade, new ones emerge.
-//!
-//! ## Initialization
-//!
-//! All ξ = 1 (uniform prior). No assumptions about energy patterns until
-//! data arrives.
+//! Half-life at ρ=0.95 ≈ 14 weeks. Old habits fade, new ones emerge.
 
 use std::collections::HashMap;
 use anyhow::Result;
+use chrono::Timelike;
 use sqlx::sqlite::SqlitePool;
 
 use crate::scheduler::RHO;
 
-/// Loads the full Dirichlet state from the database.
+/// Computes the Dirichlet state from completed tasks.
 ///
 /// Returns a map: `(dow, start_hour, tag) → ξ`.
 /// `start_hour` is the wall-clock hour at the beginning of the chunk (0, 4, 8, ...).
-/// Missing entries default to 1.0 in the solver.
-pub async fn load_dirichlet(pool: &SqlitePool) -> Result<HashMap<(usize, usize, String), f64>> {
-    let rows: Vec<(i64, i64, String, f64)> = sqlx::query_as(
-        "SELECT dow, hour, tag, xi FROM dirichlet_state"
+/// Missing entries default to 1.0 (or 10.0 for __untagged__) in the solver.
+///
+/// Each completed task contributes `effort_slots × ρ^(weeks_since_completion)`
+/// to its `(dow, hour, tag)` bucket, plus a prior of 1.0 per bucket.
+pub async fn load_dirichlet(
+    pool: &SqlitePool,
+    hours_per_chunk: usize,
+) -> Result<HashMap<(usize, usize, String), f64>> {
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT completed_at, tags, effort FROM tasks WHERE completed_at IS NOT NULL"
     ).fetch_all(pool).await?;
 
-    let mut state = HashMap::new();
-    for (dow, hour, tag, xi) in rows {
-        state.insert((dow as usize, hour as usize, tag), xi);
-    }
-    Ok(state)
-}
+    let now = chrono::Local::now();
+    let mut state: HashMap<(usize, usize, String), f64> = HashMap::new();
 
-/// Updates the Dirichlet state after observing work.
-///
-/// For each `(dow, start_hour, tag)` observation, applies the exponential
-/// forgetting update: `ξ ← ρ · ξ + n`.
-///
-/// # Arguments
-///
-/// * `observations` — List of `(dow, start_hour, tag, observed_slots)`.
-///   `start_hour` is the wall-clock hour at the beginning of the chunk (e.g. 0, 4, 8).
-pub async fn update_dirichlet(
-    pool: &SqlitePool,
-    observations: &[(usize, usize, String, f64)],
-) -> Result<()> {
-    for (dow, hour, tag, n) in observations {
-        // Upsert with exponential decay
-        sqlx::query(
-            "INSERT INTO dirichlet_state (dow, hour, tag, xi) VALUES (?, ?, ?, ?) \
-             ON CONFLICT(dow, hour, tag) DO UPDATE SET xi = ? * xi + ?"
-        )
-        .bind(*dow as i64)
-        .bind(*hour as i64)
-        .bind(tag)
-        .bind(1.0 + n) // initial: default 1.0 + observation
-        .bind(RHO)
-        .bind(*n)
-        .execute(pool)
-        .await?;
+    for (completed_at, tags_json, effort) in rows {
+        let dt = chrono::DateTime::parse_from_rfc3339(&completed_at)
+            .map(|d| d.with_timezone(&chrono::Local))
+            .or_else(|_| {
+                chrono::NaiveDateTime::parse_from_str(&completed_at, "%Y-%m-%d %H:%M:%S")
+                    .map(|d| d.and_local_timezone(chrono::Local).single().unwrap_or(now))
+            });
+
+        let dt = match dt {
+            Ok(dt) => dt,
+            Err(_) => continue,
+        };
+
+        let dow = dt.format("%u").to_string().parse::<usize>().unwrap_or(1);
+        let hour = (dt.hour() as usize / hours_per_chunk) * hours_per_chunk;
+
+        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+        let tag = tags.into_iter().next().unwrap_or_else(|| "__untagged__".to_string());
+
+        let slots = crate::scheduler::effort_to_slots(effort);
+
+        let days_ago = now.signed_duration_since(dt).num_days().max(0) as f64;
+        let weight = RHO.powf(days_ago / 7.0);
+
+        // Prior of 1.0 is added on first insertion; subsequent observations accumulate
+        state.entry((dow, hour, tag))
+            .and_modify(|xi| *xi += slots * weight)
+            .or_insert(1.0 + slots * weight);
     }
-    Ok(())
+
+    Ok(state)
 }

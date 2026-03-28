@@ -34,14 +34,13 @@ pub fn run() {
             commands::reorder,
             commands::compute_schedule,
             commands::get_calendar_freebusy,
+            commands::get_calendar_debug,
             commands::accept_task_schedule,
             commands::insert_task_at,
             commands::get_setting,
             commands::set_setting,
             commands::get_chunk_config,
             commands::set_chunk_config,
-            commands::train_nb_tag,
-            commands::train_dirichlet,
             commands::sync_tasks,
         ])
         .run(tauri::generate_context!())
