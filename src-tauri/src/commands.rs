@@ -242,11 +242,23 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
         .map(|(id, tag, _)| (id.clone(), tag.clone()))
         .collect();
 
-    // Separate locked tasks from free tasks (to be solved)
+    // Separate locked tasks from free tasks (to be solved).
+    // Also pin unlocked tasks already scheduled in the current chunk —
+    // they occupy capacity but aren't rescheduled.
     let mut scheduler_tasks: Vec<TaskInput> = Vec::new();
+    let mut pinned_current_effort: Vec<i64> = Vec::new();
     for t in &active {
         // Skip locked tasks — they don't enter the solver, with or without a schedule
         if t.locked { continue; }
+
+        // Compute current scheduled chunk for stability seeding
+        let current_chunk = t.schedule.as_ref().map(|s| date_to_chunk(&Some(s.clone()), 0, &cfg));
+
+        // Tasks scheduled in the current chunk (chunk 0) are pinned in place
+        if current_chunk == Some(0) {
+            pinned_current_effort.push(t.effort);
+            continue;
+        }
 
         let tag = predicted_tags.get(&t.id).cloned().unwrap_or_else(|| "__untagged__".to_string());
         let t_s = date_to_chunk_start(&t.start_date, &cfg);
@@ -256,9 +268,6 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_else(|| t.id[..8.min(t.id.len())].to_string());
-
-        // Compute current scheduled chunk for stability seeding
-        let current_chunk = t.schedule.as_ref().map(|s| date_to_chunk(&Some(s.clone()), 0, &cfg));
 
         scheduler_tasks.push(TaskInput::new(
             t.id.clone(),
@@ -275,6 +284,10 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
     // Compute capacity consumed by completed, locked tasks, and calendar events
     let total_chunks = cfg.total_chunks();
     let mut capacity_used = vec![0.0f64; total_chunks];
+    // Unlocked tasks pinned to the current chunk consume capacity
+    for &effort in &pinned_current_effort {
+        capacity_used[0] += scheduler::effort_to_slots(effort);
+    }
     for t in &tasks {
         if t.locked && t.completed_at.is_none() {
             if let Some(ref sched) = t.schedule {
