@@ -698,7 +698,7 @@ pub fn solve(
         .max_iter(20000)
         .eps_abs(1e-2)
         .eps_rel(1e-2)
-        .polish(true)
+        .polishing(true)
         .time_limit(Some(std::time::Duration::from_secs(30)));
 
     // Pre-flight: check total capacity vs total work
