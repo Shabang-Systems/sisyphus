@@ -5,7 +5,7 @@ import { snapshot } from "@api/utils.js";
 // Rebalance: compute_schedule + snapshot, debounced externally
 // Uses a frame delay to ensure spinner renders before heavy work starts
 export const rebalance = createAsyncThunk('ui/rebalance', async (_, { dispatch }) => {
-    await invoke('compute_schedule');
+    await invoke('compute_schedule', { globalRebalance: true });
     await dispatch(snapshot());
 });
 

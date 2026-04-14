@@ -221,6 +221,35 @@
     border-color: var(--gray-2);
 }
 
+.settings-toggle-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.settings-toggle-input {
+    margin: 2px 0 0;
+    accent-color: var(--blue);
+}
+
+.settings-toggle-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.settings-toggle-label {
+    font-size: 11px;
+    color: var(--fg);
+}
+
+.settings-toggle-hint {
+    font-size: 10px;
+    color: var(--gray-2);
+}
+
 .settings-logout {
     font-size: 11px;
     color: var(--gray-3);
