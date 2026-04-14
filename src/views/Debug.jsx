@@ -49,7 +49,7 @@ export default function Debug() {
         setLoading(true);
         setError(null);
         try {
-            const result = await invoke("compute_schedule");
+            const result = await invoke("compute_schedule", { globalRebalance: true });
             setSchedule(result);
         } catch (e) {
             setError(String(e));

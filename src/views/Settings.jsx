@@ -24,6 +24,7 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
     const [subView, setSubView] = useState(null); // "training" | "debug" | null
     const [calendars, setCalendars] = useState([]);
     const [chunkConfig, setChunkConfig] = useState(getCachedChunkConfig);
+    const [rescheduleMissedScheduledTasks, setRescheduleMissedScheduledTasks] = useState(true);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -31,6 +32,10 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
             try {
                 const val = await invoke("get_setting", { key: "calendars" });
                 if (val) setCalendars(JSON.parse(val));
+            } catch {}
+            try {
+                const val = await invoke("get_setting", { key: "reschedule_missed_scheduled_tasks" });
+                if (val !== null) setRescheduleMissedScheduledTasks(val !== "false");
             } catch {}
             try {
                 const cfg = await fetchChunkConfig();
@@ -67,13 +72,26 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
         saveChunkConfig({ ...chunkConfig, labels });
     };
 
+    const saveRescheduleMissedScheduledTasks = useCallback(async (enabled) => {
+        setRescheduleMissedScheduledTasks(enabled);
+        try {
+            await invoke("set_setting", {
+                key: "reschedule_missed_scheduled_tasks",
+                value: String(enabled),
+            });
+            if (triggerRebalance) triggerRebalance();
+        } catch (e) {
+            console.error("Failed to save global reschedule setting:", e);
+        }
+    }, [triggerRebalance]);
+
     const save = useCallback(async (urls) => {
         setCalendars(urls);
         try {
             await invoke("set_setting", { key: "calendars", value: JSON.stringify(urls) });
             if (triggerRebalance) triggerRebalance();
         } catch (e) { console.error("Failed to save calendars:", e); }
-    }, []);
+    }, [triggerRebalance]);
 
     const updateUrl = (i, value) => {
         const copy = [...calendars];
@@ -184,6 +202,23 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
                         </div>
                     </div>
                 )}
+
+                <div className="settings-section">
+                    <div className="settings-section-label">{strings.VIEWS__SETTINGS_GLOBAL_RESCHEDULE}</div>
+                    <div className="settings-section-hint">{strings.VIEWS__SETTINGS_GLOBAL_RESCHEDULE_HINT}</div>
+                    <label className="settings-toggle-row">
+                        <input
+                            className="settings-toggle-input"
+                            type="checkbox"
+                            checked={rescheduleMissedScheduledTasks}
+                            onChange={(e) => saveRescheduleMissedScheduledTasks(e.target.checked)}
+                        />
+                        <span className="settings-toggle-copy">
+                            <span className="settings-toggle-label">{strings.VIEWS__SETTINGS_RESCHEDULE_MISSED_SCHEDULES}</span>
+                            <span className="settings-toggle-hint">{strings.VIEWS__SETTINGS_RESCHEDULE_MISSED_SCHEDULES_HINT}</span>
+                        </span>
+                    </label>
+                </div>
 
                 <div className="settings-section">
                     <div className="settings-section-label">{strings.VIEWS__SETTINGS_TRAINING}</div>

@@ -104,6 +104,10 @@ export default {
     VIEWS__SETTINGS_GRID_HORIZON: "Horizon (days)",
     VIEWS__SETTINGS_GRID_LABELS: "Chunk labels",
     VIEWS__SETTINGS_GRID_DERIVED: "hours/chunk, slots/chunk (1 slot = 30 min)",
+    VIEWS__SETTINGS_GLOBAL_RESCHEDULE: "Global Reschedule",
+    VIEWS__SETTINGS_GLOBAL_RESCHEDULE_HINT: "What to clean up before a manual reschedule.",
+    VIEWS__SETTINGS_RESCHEDULE_MISSED_SCHEDULES: "Reschedule missed scheduled tasks",
+    VIEWS__SETTINGS_RESCHEDULE_MISSED_SCHEDULES_HINT: "Clear past scheduled times for unlocked incomplete tasks before solving.",
 
     VIEWS__SETTINGS_TUTORIAL: "Tutorial",
     VIEWS__SETTINGS_TUTORIAL_CTA: "Take the tour",

@@ -197,7 +197,15 @@ export default function TaskNodeView({ node, editor, getPos }) {
     const onCheck = useCallback((e) => { stop(e); if (taskId) ctx?.completeTask(taskId); }, [taskId, ctx, stop]);
     const onEffort = useCallback((e) => { stop(e); if (taskId) ctx?.cycleEffort(taskId); }, [taskId, ctx, stop]);
     const onLock = useCallback((e) => { stop(e); if (taskId) ctx?.toggleLock(taskId); }, [taskId, ctx, stop]);
-    const onSchedule = useCallback((e) => { stop(e); if (taskId) ctx?.openDateModal(taskId, "schedule"); }, [taskId, ctx, stop]);
+    const onSchedule = useCallback((e) => {
+        stop(e);
+        if (!taskId) return;
+        if (e.shiftKey) {
+            ctx?.clearSchedule?.(taskId);
+        } else {
+            ctx?.openDateModal(taskId, "schedule");
+        }
+    }, [taskId, ctx, stop]);
     const onStart = useCallback((e) => { stop(e); if (taskId) ctx?.openDateModal(taskId, "start_date"); }, [taskId, ctx, stop]);
     const onDue = useCallback((e) => { stop(e); if (taskId) ctx?.openDateModal(taskId, "due_date"); }, [taskId, ctx, stop]);
     const onRrule = useCallback((e) => { stop(e); if (taskId) ctx?.openRruleModal(taskId); }, [taskId, ctx, stop]);

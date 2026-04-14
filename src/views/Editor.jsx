@@ -869,6 +869,10 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         }
     }, [dispatch]);
 
+    const clearSchedule = useCallback((taskId) => {
+        handleDateChange(taskId, "schedule", null);
+    }, [handleDateChange]);
+
     const handleRruleChange = useCallback((taskId, rule) => {
         dispatch(updateTask({ id: taskId, changes: { rrule: rule, updated_at: now() } }));
         txSet(taskId, "rrule", rule);
@@ -1128,12 +1132,13 @@ export default function Editor({ mode = "editor", filterTaskIds = null, searchQu
         cycleEffort,
         toggleLock,
         openDateModal,
+        clearSchedule,
         openRruleModal,
         toggleCollapse,
         handleReply,
         handleReparent,
         onTaskDrag: onTaskDragRef.current,
-    }), [completeTask, cycleEffort, toggleLock, openDateModal, openRruleModal, toggleCollapse, handleReply, handleReparent]);
+    }), [completeTask, cycleEffort, toggleLock, openDateModal, clearSchedule, openRruleModal, toggleCollapse, handleReply, handleReparent]);
 
     // --- Render ---
 

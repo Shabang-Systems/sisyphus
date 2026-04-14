@@ -1,5 +1,6 @@
 use crate::state::{GlobalState, Task, Sheet};
 use chrono::Timelike;
+use chrono::TimeZone;
 use tauri::Emitter;
 use crate::scheduler::{self, SchedulerOutput, TaskInput, SchedulerParams, ChunkConfig};
 use crate::energy;
@@ -179,11 +180,81 @@ async fn fetch_and_cache_cal_grid(state: &GlobalState) -> Vec<f64> {
 }
 
 #[tauri::command]
-pub async fn compute_schedule(state: tauri::State<'_, GlobalState>) -> Result<SchedulerOutput, String> {
-    do_compute_schedule(state.inner()).await
+pub async fn compute_schedule(
+    global_rebalance: Option<bool>,
+    state: tauri::State<'_, GlobalState>,
+) -> Result<SchedulerOutput, String> {
+    do_compute_schedule(state.inner(), global_rebalance.unwrap_or(false)).await
 }
 
-async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, String> {
+fn parse_local_datetime(s: &str) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::{Local, NaiveDateTime};
+
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        Some(dt.with_timezone(&Local))
+    } else if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        Local.from_local_datetime(&dt).single()
+    } else if let Ok(dt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        Local.from_local_datetime(&dt).single()
+    } else {
+        None
+    }
+}
+
+async fn load_bool_setting(pool: &sqlx::SqlitePool, key: &str, default: bool) -> bool {
+    let value = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+
+    match value.as_deref() {
+        Some("true") => true,
+        Some("false") => false,
+        _ => default,
+    }
+}
+
+async fn clear_past_schedules_for_global_rebalance(
+    state: &GlobalState,
+    pool: &sqlx::SqlitePool,
+    tasks: &[Task],
+) -> Result<bool, String> {
+    let now = chrono::Local::now();
+    let stale_ids: Vec<&str> = tasks.iter()
+        .filter(|t| {
+            t.completed_at.is_none()
+                && !t.locked
+                && t.schedule.as_deref()
+                    .and_then(parse_local_datetime)
+                    .map(|dt| dt < now)
+                    .unwrap_or(false)
+        })
+        .map(|t| t.id.as_str())
+        .collect();
+
+    if stale_ids.is_empty() {
+        return Ok(false);
+    }
+
+    for id in stale_ids {
+        sqlx::query(
+            "UPDATE tasks SET schedule = NULL, updated_at = datetime('now') \
+             WHERE id = ? AND (locked = 0 OR locked IS NULL)"
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    *state.cal_grid_cache.write().await = None;
+
+    Ok(true)
+}
+
+async fn do_compute_schedule(state: &GlobalState, global_rebalance: bool) -> Result<SchedulerOutput, String> {
     let pool_guard = state.pool.read().await;
     let pool = pool_guard.as_ref().ok_or("No database loaded".to_string())?;
 
@@ -191,8 +262,20 @@ async fn do_compute_schedule(state: &GlobalState) -> Result<SchedulerOutput, Str
     let cfg = load_chunk_config(pool).await;
     let hours_per_chunk = cfg.hours_per_chunk();
 
+    let reschedule_missed_scheduled_tasks = if global_rebalance {
+        load_bool_setting(pool, "reschedule_missed_scheduled_tasks", true).await
+    } else {
+        false
+    };
+
+    let mut tasks = state.snapshot().await.map_err(|e| e.to_string())?;
+    if reschedule_missed_scheduled_tasks
+        && clear_past_schedules_for_global_rebalance(state, pool, &tasks).await?
+    {
+        tasks = state.snapshot().await.map_err(|e| e.to_string())?;
+    }
+
     // Fetch active tasks (not completed, not deferred, not empty)
-    let tasks = state.snapshot().await.map_err(|e| e.to_string())?;
     let text_check = regex::Regex::new(r#""text"\s*:\s*"[^"]+""#).unwrap();
     let active: Vec<&Task> = tasks.iter()
         .filter(|t| {
@@ -677,7 +760,7 @@ pub async fn sync_tasks(
                 // If scheduling-relevant fields changed, re-run the solver
                 // and merge all updated tasks into one response.
                 if needs_reschedule {
-                    if let Ok(_) = do_compute_schedule(&gs).await {
+                    if let Ok(_) = do_compute_schedule(&gs, false).await {
                         if let Ok(all_tasks) = gs.snapshot().await {
                             changed = all_tasks;
                         }
