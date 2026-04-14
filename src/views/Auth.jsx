@@ -71,7 +71,7 @@ export default function Auth({ onAuth }) {
                 <div className="auth-subhead data">{strings.VIEWS__AUTH_DATA}</div>
                 <br />
                 <div className="copyright">
-                    &copy;{(new Date()).getFullYear()} Shabang Systems, LLC. All rights reserved.
+                    &copy;{(new Date()).getFullYear()} Adams Research. All rights reserved.
                 </div>
             </div>
         </div>
