@@ -1,0 +1,110 @@
+# Maintainer: Adams Research
+
+pkgname=sisyphus-git
+_pkgname=sisyphus
+_min_rust=1.88.0
+pkgver=0.1.0.r41.ge9deaca
+pkgrel=1
+pkgdesc="Desktop task scheduler built with Tauri"
+arch=('x86_64')
+url="https://github.com/adamsresearch/sisyphus"
+license=('AGPL-3.0-or-later')
+options=('!lto')
+provides=("${_pkgname}")
+conflicts=("${_pkgname}")
+depends=(
+  'gtk3'
+  'hicolor-icon-theme'
+  'libayatana-appindicator'
+  'libsoup3'
+  'openssl'
+  'sqlite'
+  'webkit2gtk-4.1'
+)
+makedepends=(
+  'cargo'
+  'cmake'
+  'git'
+  'nodejs'
+  'pkgconf'
+  'yarn'
+)
+source=("${_pkgname}::git+${url}.git")
+sha256sums=('SKIP')
+
+_check_rust_version() {
+  local rustver
+  rustver="$(rustc --version | awk '{print $2}')"
+
+  if (( "$(vercmp "${rustver}" "${_min_rust}")" < 0 )); then
+    error "sisyphus requires Rust ${_min_rust} or newer; found ${rustver}."
+    error "If you use rustup, run: rustup update stable"
+    return 1
+  fi
+}
+
+pkgver() {
+  cd "${_pkgname}"
+
+  if git describe --long --tags --match 'v[0-9]*' >/dev/null 2>&1; then
+    git describe --long --tags --match 'v[0-9]*' | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
+  else
+    printf '0.1.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  fi
+}
+
+prepare() {
+  cd "${_pkgname}"
+  _check_rust_version
+
+  export CARGO_HOME="${srcdir}/cargo-home"
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  export YARN_CACHE_FOLDER="${srcdir}/yarn-cache"
+
+  yarn install --frozen-lockfile
+
+  cd src-tauri
+  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
+}
+
+build() {
+  cd "${_pkgname}"
+  _check_rust_version
+
+  export CARGO_HOME="${srcdir}/cargo-home"
+  export CARGO_TARGET_DIR="${srcdir}/target"
+  export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+  export YARN_CACHE_FOLDER="${srcdir}/yarn-cache"
+
+  yarn build
+  cargo build --frozen --release --manifest-path src-tauri/Cargo.toml
+}
+
+package() {
+  cd "${_pkgname}"
+
+  install -Dm755 "${srcdir}/target/release/sisyphus" "${pkgdir}/usr/bin/sisyphus"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+
+  install -Dm644 src-tauri/icons/32x32.png \
+    "${pkgdir}/usr/share/icons/hicolor/32x32/apps/sisyphus.png"
+  install -Dm644 src-tauri/icons/128x128.png \
+    "${pkgdir}/usr/share/icons/hicolor/128x128/apps/sisyphus.png"
+  install -Dm644 src-tauri/icons/128x128@2x.png \
+    "${pkgdir}/usr/share/icons/hicolor/256x256/apps/sisyphus.png"
+  install -Dm644 src-tauri/icons/icon.png \
+    "${pkgdir}/usr/share/icons/hicolor/512x512/apps/sisyphus.png"
+
+  install -Dm644 /dev/stdin "${pkgdir}/usr/share/applications/sisyphus.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Sisyphus
+Comment=Task scheduling desktop app
+Exec=sisyphus
+Icon=sisyphus
+Terminal=false
+Categories=Office;ProjectManagement;
+StartupNotify=true
+StartupWMClass=sisyphus
+EOF
+}

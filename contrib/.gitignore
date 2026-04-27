@@ -1,0 +1,6 @@
+/pkg/
+/sisyphus/
+/src/
+/*.log
+/*.pkg.tar*
+/*.src.tar*
