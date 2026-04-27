@@ -17,6 +17,7 @@ const ui = createSlice({
         clock: Date.now(),
         rebalancing: false,
         syncPending: 0,
+        remoteSyncPending: 0,
     },
     reducers: {
         setFilePath: (state, { payload }) => {
@@ -27,6 +28,8 @@ const ui = createSlice({
         },
         syncStart: (state) => { state.syncPending++; },
         syncEnd: (state) => { state.syncPending = Math.max(0, state.syncPending - 1); },
+        remoteSyncStart: (state) => { state.remoteSyncPending++; },
+        remoteSyncEnd: (state) => { state.remoteSyncPending = Math.max(0, state.remoteSyncPending - 1); },
     },
     extraReducers: (builder) => {
         builder
@@ -48,5 +51,5 @@ const ui = createSlice({
     },
 });
 
-export const { setFilePath, tick, syncStart, syncEnd } = ui.actions;
+export const { setFilePath, tick, syncStart, syncEnd, remoteSyncStart, remoteSyncEnd } = ui.actions;
 export default ui.reducer;

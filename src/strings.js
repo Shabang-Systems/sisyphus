@@ -5,7 +5,7 @@ export default {
     VIEWS__AUTH_SELECT: "open",
     VIEWS__AUTH_CREATE: "create",
     VIEWS__AUTH_WORKSPACE: " a workspace",
-    VIEWS__AUTH_DATA: "your data never leaves your device.",
+    VIEWS__AUTH_DATA: "your data stays local unless you enable sync.",
     VIEWS__AUTH_MALFORM_HEAD: "Could not open workspace",
     VIEWS__AUTH_MALFORM_SUBHEAD: "Please check that the file exists and is a valid database.",
 
@@ -66,6 +66,10 @@ export default {
 
     CHUNK_LABELS: ["midnight", "dawn", "morning", "afternoon", "evening", "night"],
     VIEWS__SETTINGS_TITLE: "settings",
+    VIEWS__SETTINGS_REMOTE_SYNC: "Remote Sync",
+    VIEWS__SETTINGS_REMOTE_SYNC_HINT: "Optional Postgres event log for syncing this workspace across devices.",
+    VIEWS__SETTINGS_REMOTE_SYNC_PERIOD: "Sync every",
+    VIEWS__SETTINGS_REMOTE_SYNC_SECONDS: "seconds",
     VIEWS__SETTINGS_CALENDARS: "Calendars",
     VIEWS__SETTINGS_CALENDARS_HINT: "Add ICS calendar URLs. Events will reduce available scheduling capacity.",
     VIEWS__SETTINGS_ADD_CALENDAR: "add calendar",

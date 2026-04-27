@@ -7,6 +7,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import { rebalance } from "@api/ui.js";
 import { snapshot } from "@api/utils.js";
 import { initSyncListener, flushNow } from "@api/sync.js";
+import { remoteSyncNow, restartRemoteSyncTimer, stopRemoteSyncTimer } from "@api/remoteSync.js";
 import { fetchChunkConfig } from "@api/chunkConfig.js";
 import Auth from "@views/Auth.jsx";
 import Editor from "@views/Editor.jsx";
@@ -43,18 +44,20 @@ function LoadingOverlay() {
 function SyncButton() {
     const dispatch = useDispatch();
     const pending = useSelector(state => state.ui.syncPending > 0);
+    const remotePending = useSelector(state => state.ui.remoteSyncPending > 0);
     const [animating, setAnimating] = useState(false);
     const [syncing, setSyncing] = useState(false);
     const timerRef = useRef(null);
+    const anyPending = pending || remotePending;
 
     useEffect(() => {
-        if (pending) {
+        if (anyPending) {
             setAnimating(true);
             if (timerRef.current) clearTimeout(timerRef.current);
         } else if (animating) {
             timerRef.current = setTimeout(() => setAnimating(false), 600);
         }
-    }, [pending]);
+    }, [anyPending]);
 
     const forceSync = useCallback(async () => {
         if (syncing) return;
@@ -62,13 +65,14 @@ function SyncButton() {
         flushNow();
         await dispatch(rebalance());
         await dispatch(snapshot());
+        await remoteSyncNow();
         setSyncing(false);
     }, [dispatch, syncing]);
 
     return (
         <>
             <div className="sync-dot-wrap" onClick={forceSync}>
-                {animating && <div className="sync-dot-pulse" />}
+                {animating && <div className={`sync-dot-pulse${remotePending && !pending ? " remote" : ""}`} />}
                 <div className="sync-dot-idle" />
             </div>
             {syncing && <FullScreenOverlay label={strings.SYNC_RESCHEDULING} />}
@@ -143,6 +147,7 @@ function AppInner() {
 
     // Initialize background sync listener (Tauri events from Rust)
     useEffect(() => { initSyncListener(); }, []);
+    useEffect(() => () => stopRemoteSyncTimer(), []);
     const [activeView, setActiveView] = useState("action");
     const [jumpToTaskId, setJumpToTaskId] = useState(null);
 
@@ -192,6 +197,7 @@ function AppInner() {
                 let success = await invoke("load", { path: workspace });
                 if (success) {
                     fetchChunkConfig(); // warm cache before views mount
+                    restartRemoteSyncTimer();
                     setIsReady(true);
                 }
             })();
@@ -201,6 +207,7 @@ function AppInner() {
     const auth = useCallback((path) => {
         localStorage.setItem("sisyphus__workspace", path);
         fetchChunkConfig(); // warm cache before views mount
+        restartRemoteSyncTimer();
         setIsReady(true);
     }, []);
 
@@ -211,6 +218,7 @@ function AppInner() {
         });
         if (ok) {
             localStorage.removeItem("sisyphus__workspace");
+            stopRemoteSyncTimer();
             setIsReady(false);
         }
     }, []);

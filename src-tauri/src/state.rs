@@ -246,6 +246,8 @@ pub struct GlobalState {
     pub children_index: Arc<RwLock<std::collections::HashMap<String, Vec<String>>>>,
     /// Cached calendar freebusy grid: 84 values (14 days × 6 chunks/day), updated by compute_schedule.
     pub cal_grid_cache: Arc<RwLock<Option<Vec<f64>>>>,
+    /// Serializes remote event-log sync so timer/manual runs cannot overlap.
+    pub remote_sync_lock: Arc<Mutex<()>>,
 }
 
 impl GlobalState {
@@ -256,6 +258,7 @@ impl GlobalState {
             task_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
             children_index: Arc::new(RwLock::new(std::collections::HashMap::new())),
             cal_grid_cache: Arc::new(RwLock::new(None)),
+            remote_sync_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -358,6 +361,7 @@ impl GlobalState {
         .fetch_one(pool)
         .await?;
         let task: Task = row.into();
+        crate::remote_sync::enqueue_task_put_by_id(pool, &task.id).await;
 
         Ok(task)
     }
@@ -476,6 +480,8 @@ impl GlobalState {
             changed_tasks
         };
 
+        crate::remote_sync::enqueue_task_put_by_id(pool, &task.id).await;
+
         Ok(changed)
     }
 
@@ -501,6 +507,8 @@ impl GlobalState {
             }
             children_idx.remove(id);
         }
+
+        crate::remote_sync::enqueue_task_delete(pool, id).await;
 
         Ok(())
     }
@@ -539,6 +547,8 @@ impl GlobalState {
                 children_idx.entry(pid.to_string()).or_default().push(id.to_string());
             }
         }
+
+        crate::remote_sync::enqueue_task_put_by_id(pool, id).await;
 
         Ok(())
     }
@@ -590,6 +600,7 @@ impl GlobalState {
             .bind(query).bind(id).execute(pool).await?;
         let sheet = sqlx::query_as::<_, Sheet>("SELECT id, query, position FROM sheets WHERE id = ?")
             .bind(id).fetch_one(pool).await?;
+        crate::remote_sync::enqueue_sheet_put_by_id(pool, sheet.id).await;
         Ok(sheet)
     }
 
@@ -602,6 +613,7 @@ impl GlobalState {
             .bind(max_pos.0 + 1).execute(pool).await?;
         let sheet = sqlx::query_as::<_, Sheet>("SELECT id, query, position FROM sheets ORDER BY id DESC LIMIT 1")
             .fetch_one(pool).await?;
+        crate::remote_sync::enqueue_sheet_put_by_id(pool, sheet.id).await;
         Ok(sheet)
     }
 
@@ -609,6 +621,7 @@ impl GlobalState {
         let pool_guard = self.pool.read().await;
         let pool = pool_guard.as_ref().ok_or(anyhow::anyhow!("No database loaded"))?;
         sqlx::query("DELETE FROM sheets WHERE id = ?").bind(id).execute(pool).await?;
+        crate::remote_sync::enqueue_sheet_delete(pool, id).await;
         Ok(())
     }
 
@@ -656,6 +669,8 @@ impl GlobalState {
                 .execute(pool)
                 .await?;
         }
+
+        crate::remote_sync::enqueue_task_puts_by_id(pool, ids).await;
 
         Ok(())
     }
@@ -789,6 +804,9 @@ impl GlobalState {
 
             changed_tasks
         };
+
+        let ids: Vec<String> = tasks.iter().map(|t| t.id.clone()).collect();
+        crate::remote_sync::enqueue_task_puts_by_id(pool, &ids).await;
 
         Ok(changed)
     }

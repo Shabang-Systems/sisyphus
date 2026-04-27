@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCachedChunkConfig, fetchChunkConfig, setChunkConfigCache } from "@api/chunkConfig.js";
+import { restartRemoteSyncTimer } from "@api/remoteSync.js";
 import strings from "@strings";
 import Training from "@views/Training.jsx";
 import Debug from "@views/Debug.jsx";
@@ -25,10 +26,20 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
     const [calendars, setCalendars] = useState([]);
     const [chunkConfig, setChunkConfig] = useState(getCachedChunkConfig);
     const [rescheduleMissedScheduledTasks, setRescheduleMissedScheduledTasks] = useState(true);
+    const [remoteSyncUrl, setRemoteSyncUrl] = useState("");
+    const [remoteSyncPeriod, setRemoteSyncPeriod] = useState(60);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         (async () => {
+            try {
+                const val = await invoke("get_setting", { key: "remote_sync_url" });
+                if (val) setRemoteSyncUrl(val);
+            } catch {}
+            try {
+                const val = await invoke("get_setting", { key: "remote_sync_period_seconds" });
+                if (val !== null) setRemoteSyncPeriod(parseInt(val, 10) || 60);
+            } catch {}
             try {
                 const val = await invoke("get_setting", { key: "calendars" });
                 if (val) setCalendars(JSON.parse(val));
@@ -43,6 +54,27 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
             } catch {}
             setLoading(false);
         })();
+    }, []);
+
+    const saveRemoteSyncUrl = useCallback(async (value) => {
+        setRemoteSyncUrl(value);
+        try {
+            await invoke("set_setting", { key: "remote_sync_url", value: value.trim() });
+            await restartRemoteSyncTimer();
+        } catch (e) {
+            console.error("Failed to save remote sync URL:", e);
+        }
+    }, []);
+
+    const saveRemoteSyncPeriod = useCallback(async (value) => {
+        const seconds = Math.max(5, parseInt(value, 10) || 60);
+        setRemoteSyncPeriod(seconds);
+        try {
+            await invoke("set_setting", { key: "remote_sync_period_seconds", value: String(seconds) });
+            await restartRemoteSyncTimer();
+        } catch (e) {
+            console.error("Failed to save remote sync period:", e);
+        }
     }, []);
 
     const saveChunkConfig = useCallback(async (cfg) => {
@@ -117,6 +149,33 @@ export default function Settings({ onLogout, triggerRebalance, onStartTour }) {
             <div className="drag-region" data-tauri-drag-region />
             <div className="settings-main">
                 <div className="settings-section settings-first-section">
+                    <div className="settings-section-label">{strings.VIEWS__SETTINGS_REMOTE_SYNC}</div>
+                    <div className="settings-section-hint">{strings.VIEWS__SETTINGS_REMOTE_SYNC_HINT}</div>
+                    <div className="settings-cal-row">
+                        <input
+                            className="settings-cal-input"
+                            value={remoteSyncUrl}
+                            onChange={(e) => setRemoteSyncUrl(e.target.value)}
+                            onBlur={(e) => saveRemoteSyncUrl(e.target.value)}
+                            placeholder="postgres://user:password@host:5432/database"
+                            spellCheck={false}
+                            autoComplete="off"
+                        />
+                    </div>
+                    <div className="settings-grid-row">
+                        <span className="settings-grid-field-label">{strings.VIEWS__SETTINGS_REMOTE_SYNC_PERIOD}</span>
+                        <input
+                            className="settings-grid-input"
+                            type="number"
+                            min={5}
+                            value={remoteSyncPeriod}
+                            onChange={(e) => saveRemoteSyncPeriod(e.target.value)}
+                        />
+                        <span className="settings-grid-derived">{strings.VIEWS__SETTINGS_REMOTE_SYNC_SECONDS}</span>
+                    </div>
+                </div>
+
+                <div className="settings-section">
                     <div className="settings-section-label">{strings.VIEWS__SETTINGS_CALENDARS}</div>
                     <div className="settings-section-hint">{strings.VIEWS__SETTINGS_CALENDARS_HINT}</div>
                     {calendars.map((url, i) => (

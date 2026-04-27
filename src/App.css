@@ -99,6 +99,10 @@ body {
     animation: sync-pulse 1s ease-in infinite;
 }
 
+.sync-dot-pulse.remote {
+    background: var(--green);
+}
+
 @keyframes sync-pulse {
     0% { transform: scale(0); opacity: 1; }
     100% { transform: scale(1.8); opacity: 0; }

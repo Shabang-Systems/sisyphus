@@ -5,6 +5,7 @@ pub mod energy;
 pub mod nb;
 pub mod calendar;
 pub mod sync;
+pub mod remote_sync;
 
 use state::GlobalState;
 
@@ -42,6 +43,7 @@ pub fn run() {
             commands::get_chunk_config,
             commands::set_chunk_config,
             commands::sync_tasks,
+            commands::remote_sync_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -43,7 +43,7 @@ Notes:
 - `src-tauri/migrations/`: SQLite schema migrations
 - `misc/convex_task_scheduling_v2.md`: scheduler design notes
 
-Current migration count: 11 files (`00000000000000` through `00000000000010`).
+Current migration count: 12 files (`00000000000000` through `00000000000011`).
 
 ## Core Architecture
 
@@ -71,7 +71,7 @@ Important Tauri commands currently exposed from `src-tauri/src/lib.rs`:
 - workspace/db: `bootstrap`, `load`, `snapshot`
 - tasks: `create_task`, `upsert`, `batch_upsert`, `remove`, `set_parent`, `insert_task_at`, `reorder`
 - browse/search: `search`, `list_tags`, `list_sheets`, `upsert_sheet`, `add_sheet`, `remove_sheet`
-- scheduling/settings: `compute_schedule`, `accept_task_schedule`, `get_calendar_freebusy`, `get_calendar_debug`, `get_setting`, `set_setting`, `get_chunk_config`, `set_chunk_config`, `sync_tasks`
+- scheduling/settings: `compute_schedule`, `accept_task_schedule`, `get_calendar_freebusy`, `get_calendar_debug`, `get_setting`, `set_setting`, `get_chunk_config`, `set_chunk_config`, `sync_tasks`, `remote_sync_now`
 
 ## Frontend Patterns That Matter
 

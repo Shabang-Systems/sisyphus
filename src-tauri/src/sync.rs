@@ -93,6 +93,7 @@ pub async fn process_transactions(
                     needs_reschedule = true;
                 }
                 touched_ids.push(id.clone());
+                crate::remote_sync::enqueue_task_put_by_id(pool, id).await;
             }
 
             Transaction::Create { task } => {
@@ -125,6 +126,7 @@ pub async fn process_transactions(
                 }
 
                 touched_ids.push(task.id.clone());
+                crate::remote_sync::enqueue_task_put_by_id(pool, &task.id).await;
             }
 
             Transaction::Delete { id } => {
@@ -141,6 +143,7 @@ pub async fn process_transactions(
                         }
                     }
                 }
+                crate::remote_sync::enqueue_task_delete(pool, id).await;
             }
         }
     }

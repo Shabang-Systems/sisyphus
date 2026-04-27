@@ -220,9 +220,9 @@ async fn clear_past_schedules_for_global_rebalance(
     state: &GlobalState,
     pool: &sqlx::SqlitePool,
     tasks: &[Task],
-) -> Result<bool, String> {
+) -> Result<Vec<String>, String> {
     let now = chrono::Local::now();
-    let stale_ids: Vec<&str> = tasks.iter()
+    let stale_ids: Vec<String> = tasks.iter()
         .filter(|t| {
             t.completed_at.is_none()
                 && !t.locked
@@ -231,14 +231,14 @@ async fn clear_past_schedules_for_global_rebalance(
                     .map(|dt| dt < now)
                     .unwrap_or(false)
         })
-        .map(|t| t.id.as_str())
+        .map(|t| t.id.clone())
         .collect();
 
     if stale_ids.is_empty() {
-        return Ok(false);
+        return Ok(vec![]);
     }
 
-    for id in stale_ids {
+    for id in &stale_ids {
         sqlx::query(
             "UPDATE tasks SET schedule = NULL, updated_at = datetime('now') \
              WHERE id = ? AND (locked = 0 OR locked IS NULL)"
@@ -251,7 +251,7 @@ async fn clear_past_schedules_for_global_rebalance(
 
     *state.cal_grid_cache.write().await = None;
 
-    Ok(true)
+    Ok(stale_ids)
 }
 
 async fn do_compute_schedule(state: &GlobalState, global_rebalance: bool) -> Result<SchedulerOutput, String> {
@@ -268,11 +268,14 @@ async fn do_compute_schedule(state: &GlobalState, global_rebalance: bool) -> Res
         false
     };
 
+    let mut schedule_changed_ids: Vec<String> = Vec::new();
     let mut tasks = state.snapshot().await.map_err(|e| e.to_string())?;
-    if reschedule_missed_scheduled_tasks
-        && clear_past_schedules_for_global_rebalance(state, pool, &tasks).await?
-    {
-        tasks = state.snapshot().await.map_err(|e| e.to_string())?;
+    if reschedule_missed_scheduled_tasks {
+        let stale_ids = clear_past_schedules_for_global_rebalance(state, pool, &tasks).await?;
+        if !stale_ids.is_empty() {
+            schedule_changed_ids.extend(stale_ids);
+            tasks = state.snapshot().await.map_err(|e| e.to_string())?;
+        }
     }
 
     // Fetch active tasks (not completed, not deferred, not empty)
@@ -449,23 +452,39 @@ async fn do_compute_schedule(state: &GlobalState, global_rebalance: bool) -> Res
 
     // Write schedule for properly solved tasks
     for (tid, sched_date) in &earliest {
-        let _ = sqlx::query(
+        if let Ok(result) = sqlx::query(
             "UPDATE tasks SET schedule = ?, updated_at = datetime('now') WHERE id = ? AND (locked = 0 OR locked IS NULL)"
         )
         .bind(sched_date)
         .bind(tid)
         .execute(pool)
-        .await;
+        .await
+        {
+            if result.rows_affected() > 0 {
+                schedule_changed_ids.push(tid.clone());
+            }
+        }
     }
 
     // Clear schedule for parked tasks
     for tid in &all_parked {
-        let _ = sqlx::query(
+        if let Ok(result) = sqlx::query(
             "UPDATE tasks SET schedule = NULL, updated_at = datetime('now') WHERE id = ? AND (locked = 0 OR locked IS NULL)"
         )
         .bind(tid)
         .execute(pool)
-        .await;
+        .await
+        {
+            if result.rows_affected() > 0 {
+                schedule_changed_ids.push(tid.clone());
+            }
+        }
+    }
+
+    if !schedule_changed_ids.is_empty() {
+        schedule_changed_ids.sort();
+        schedule_changed_ids.dedup();
+        crate::remote_sync::enqueue_task_puts_by_id(pool, &schedule_changed_ids).await;
     }
 
     Ok(output)
@@ -528,6 +547,11 @@ pub async fn insert_task_at(
     };
 
     // Shift all tasks at or after insert_pos
+    let shifted_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM tasks WHERE position >= ?")
+        .bind(insert_pos)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query("UPDATE tasks SET position = position + 1 WHERE position >= ?")
         .bind(insert_pos)
         .execute(pool)
@@ -571,7 +595,9 @@ pub async fn insert_task_at(
         }
     }
     // Use the regular upsert path for enrichment (the DB row already exists)
-    state.upsert(&inserted).await.map_err(|e| e.to_string())
+    let changed = state.upsert(&inserted).await.map_err(|e| e.to_string())?;
+    crate::remote_sync::enqueue_task_puts_by_id(pool, &shifted_ids).await;
+    Ok(changed)
 }
 
 /// Extracts the first tag from a JSON array string like `["tag1", "tag2"]`.
@@ -692,6 +718,7 @@ pub async fn set_setting(key: String, value: String, state: tauri::State<'_, Glo
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+    crate::remote_sync::enqueue_setting_put(pool, &key).await;
     Ok(())
 }
 
@@ -735,6 +762,7 @@ pub async fn set_chunk_config(config: ChunkConfig, state: tauri::State<'_, Globa
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+    crate::remote_sync::enqueue_setting_put(pool, "chunk_config").await;
 
     // Invalidate calendar cache since grid dimensions may have changed
     *state.cal_grid_cache.write().await = None;
@@ -778,4 +806,13 @@ pub async fn sync_tasks(
         }
     });
     Ok(())
+}
+
+#[tauri::command]
+pub async fn remote_sync_now(
+    state: tauri::State<'_, GlobalState>,
+) -> Result<crate::remote_sync::RemoteSyncResult, String> {
+    crate::remote_sync::sync_now(state.inner())
+        .await
+        .map_err(|e| e.to_string())
 }
